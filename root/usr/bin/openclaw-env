@@ -24,9 +24,12 @@ NPM_BIN="${NODE_BASE}/bin/npm"
 PNPM_BIN="${OC_GLOBAL}/bin/pnpm"
 
 # Node.js 官方镜像 + musl 非官方构建
+# Node.js 官方镜像 + musl 非官方构建
 NODE_MIRROR="${NODE_MIRROR:-https://nodejs.org/dist}"
 NODE_MIRROR_CN="https://npmmirror.com/mirrors/node"
 NODE_MUSL_MIRROR="https://unofficial-builds.nodejs.org/download/release"
+# 项目自托管 ARM64 musl Node.js (unofficial-builds 仅提供 x64 musl)
+NODE_SELF_HOST="https://github.com/10000ge10000/luci-app-openclaw/releases/download/node-bins"
 
 export PATH="${NODE_BASE}/bin:${OC_GLOBAL}/bin:$PATH"
 
@@ -99,26 +102,7 @@ download_node() {
 	local libc_type
 	libc_type=$(detect_libc)
 
-	local tarball=""
-	local url="" url_fallback=""
-
-	if [ "$libc_type" = "musl" ]; then
-		tarball="node-v${node_ver}-${node_arch}-musl.tar.xz"
-		url="${NODE_MUSL_MIRROR}/v${node_ver}/${tarball}"
-		url_fallback=""
-		echo ""
-		echo "=== 下载 Node.js v${node_ver} (${node_arch}, musl libc) ==="
-	else
-		tarball="node-v${node_ver}-${node_arch}.tar.xz"
-		url="${NODE_MIRROR}/v${node_ver}/${tarball}"
-		url_fallback="${NODE_MIRROR_CN}/v${node_ver}/${tarball}"
-		echo ""
-		echo "=== 下载 Node.js v${node_ver} (${node_arch}, glibc) ==="
-	fi
-
-	local tmp_file="/tmp/${tarball}"
-
-	# 如果已存在且版本正确, 跳过
+	# 如果已存在且版本兼容, 跳过
 	if [ -x "$NODE_BIN" ]; then
 		local current_ver
 		current_ver=$("$NODE_BIN" --version 2>/dev/null | sed 's/^v//')
@@ -126,19 +110,67 @@ download_node() {
 			log_info "Node.js v${node_ver} 已安装, 跳过下载"
 			return 0
 		fi
+		# ARM64 musl 使用 Alpine 打包，版本号可能不完全匹配
+		# 只要主版本号相同即认为兼容 (如 22.15.1 vs 22.16.0)
+		local cur_major=$(echo "$current_ver" | cut -d. -f1)
+		local want_major=$(echo "$node_ver" | cut -d. -f1)
+		if [ "$cur_major" = "$want_major" ]; then
+			log_info "Node.js v${current_ver} 已安装 (兼容 v${node_ver}), 跳过下载"
+			return 0
+		fi
 		log_warn "当前 Node.js v${current_ver}, 将更新到 v${node_ver}"
 	fi
 
-	# 下载 (带重试)
+	# ── 构建下载 URL 列表 (按优先级排列) ──
+	local mirror_list=""
+	local musl_tarball="node-v${node_ver}-${node_arch}-musl.tar.xz"
+	local glibc_tarball="node-v${node_ver}-${node_arch}.tar.xz"
+
+	if [ "$libc_type" = "musl" ]; then
+		echo ""
+		echo "=== 下载 Node.js v${node_ver} (${node_arch}, musl libc) ==="
+
+		if [ "$node_arch" = "linux-arm64" ]; then
+			# ARM64 musl: unofficial-builds 不提供，从项目自托管下载
+			# 1) 项目自托管 ARM64 musl 构建
+			mirror_list="${NODE_SELF_HOST}/${musl_tarball}"
+			# 2) unofficial-builds (留作将来可能支持)
+			mirror_list="$mirror_list ${NODE_MUSL_MIRROR}/v${node_ver}/${musl_tarball}"
+		else
+			# x64 musl: unofficial-builds 提供
+			# 1) unofficial-builds
+			mirror_list="${NODE_MUSL_MIRROR}/v${node_ver}/${musl_tarball}"
+			# 2) npmmirror 镜像
+			mirror_list="$mirror_list ${NODE_MIRROR_CN}/v${node_ver}/${musl_tarball}"
+		fi
+	else
+		echo ""
+		echo "=== 下载 Node.js v${node_ver} (${node_arch}, glibc) ==="
+
+		mirror_list="${NODE_MIRROR}/v${node_ver}/${glibc_tarball}"
+		mirror_list="$mirror_list ${NODE_MIRROR_CN}/v${node_ver}/${glibc_tarball}"
+	fi
+
+	# ── 逐个尝试下载 ──
 	local downloaded=0
-	local mirror_list="$url"
-	[ -n "$url_fallback" ] && mirror_list="$url $url_fallback"
+	local tmp_file="/tmp/node-v${node_ver}.tar.xz"
+	local attempt=0
+	local total=$(echo "$mirror_list" | wc -w)
+
 	for mirror_url in $mirror_list; do
-		echo "  正在从 ${mirror_url} 下载..."
+		attempt=$((attempt + 1))
+		echo "  正在从 ${mirror_url} 下载... (${attempt}/${total})"
 		if curl -fSL --connect-timeout 15 --max-time 300 -o "$tmp_file" "$mirror_url" 2>/dev/null || \
 		   wget -q --timeout=15 -O "$tmp_file" "$mirror_url" 2>/dev/null; then
-			downloaded=1
-			break
+			# 校验文件大小 (Node.js xz 压缩包至少 5MB; Alpine 精简包约 12MB, 官方完整包约 30MB)
+			local fsize=$(wc -c < "$tmp_file" 2>/dev/null || echo 0)
+			if [ "$fsize" -gt 5000000 ] 2>/dev/null; then
+				downloaded=1
+				break
+			else
+				log_warn "文件大小异常 (${fsize} bytes), 跳过"
+				rm -f "$tmp_file"
+			fi
 		fi
 		log_warn "下载失败, 尝试备用镜像..."
 	done
@@ -158,7 +190,9 @@ download_node() {
 
 	# 验证
 	if [ -x "$NODE_BIN" ]; then
-		log_info "Node.js $($NODE_BIN --version) 安装成功"
+		local installed_ver
+		installed_ver=$("$NODE_BIN" --version 2>/dev/null || echo "unknown")
+		log_info "Node.js ${installed_ver} 安装成功"
 	else
 		log_error "Node.js 安装验证失败"
 		exit 1

@@ -1,0 +1,70 @@
+name: Build Node.js ARM64 musl
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: 'Node.js 版本 (如 22.16.0)'
+        required: true
+        default: '22.16.0'
+
+jobs:
+  build:
+    name: Build Node.js ${{ github.event.inputs.node_version }} ARM64 musl
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Build Node.js ARM64 musl portable
+        run: |
+          NODE_VER="${{ github.event.inputs.node_version }}"
+          mkdir -p dist
+          echo "=== Building Node.js v${NODE_VER} ARM64 musl portable tarball ==="
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD/dist:/output" \
+            -v "$PWD/scripts/build-node-musl.sh:/build-node-musl.sh:ro" \
+            -e "NODE_VER=${NODE_VER}" \
+            alpine:3.21 sh /build-node-musl.sh
+
+      - name: Verify tarball
+        run: |
+          echo "=== Output files ==="
+          ls -lh dist/
+          echo ""
+          echo "=== Tarball contents (first 20 entries) ==="
+          tar tJf dist/*.tar.xz | head -20
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-arm64-musl
+          path: dist/*.tar.xz
+
+      - name: Create/Update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: node-bins
+          name: "Node.js Prebuilt Binaries (musl)"
+          files: dist/*.tar.xz
+          draft: false
+          prerelease: false
+          make_latest: false
+          body: |
+            预编译的 Node.js ARM64 musl 二进制文件，供 ARM64 OpenWrt/iStoreOS 设备使用。
+
+            Node.js 官方 [unofficial-builds](https://unofficial-builds.nodejs.org/) 仅提供 x64 musl 构建，不提供 ARM64 musl。
+            此 Release 使用 Alpine Linux ARM64 (musl libc) 环境打包。
+
+            **注意**: 实际 Node.js 版本可能与文件名中的版本略有差异（取决于 Alpine 仓库提供的版本），
+            但主版本号 (v22.x) 保证兼容。
+
+            `openclaw-env setup` 会在 ARM64 musl 设备上自动从此处下载。

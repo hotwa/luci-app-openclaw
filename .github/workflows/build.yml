@@ -58,6 +58,22 @@ jobs:
       - name: List outputs
         run: ls -lh dist/
 
+      - name: Extract changelog
+        id: changelog
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          # 提取当前版本的 CHANGELOG 内容 (从 ## [version] 到下一个 ## [ 之间)
+          CHANGELOG=$(awk "/^## \\[${VER}\\]/{found=1; next} /^## \\[/{if(found) exit} found{print}" CHANGELOG.md)
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="暂无更新日志"
+          fi
+          # 写入多行输出
+          {
+            echo "content<<CHANGELOG_EOF"
+            echo "$CHANGELOG"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -77,6 +93,10 @@ jobs:
             ## luci-app-openclaw ${{ steps.version.outputs.tag }}
 
             OpenClaw AI 网关的 OpenWrt LuCI 管理插件。
+
+            ### 更新日志
+
+            ${{ steps.changelog.outputs.content }}
 
             ### 下载说明
 
