@@ -4,6 +4,18 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.2] - 2026-03-02
+
+### 修复
+- **P0** ARM64 musl: Gateway 崩溃循环 — `process.execPath` 返回 musl 链接器路径导致 `child_process.fork()` 失败
+  - 使用 `patchelf` 直接修改 node ELF 二进制的 interpreter 和 rpath，替代 ld-musl wrapper 方案
+  - 子进程通过 `process.execPath` fork 时可正确找到 node 二进制
+- **P0** ARM64 musl: Unicode property escapes 正则失败 (`\p{Emoji_Presentation}`) — 缺少 `NODE_ICU_DATA` 环境变量
+  - init.d、openclaw-env、oc-config.sh 所有入口均添加 `NODE_ICU_DATA` 环境变量
+
+### 改进
+- `build-node-musl.sh` 构建验证阶段新增 `process.execPath` 输出检查
+
 ## [1.0.1] - 2026-03-02
 
 ### 修复

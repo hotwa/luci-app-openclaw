@@ -13,11 +13,59 @@
 
 | 项目 | 要求 |
 |------|------|
-| 架构 | x86_64 或 aarch64 |
+| 架构 | x86_64 或 aarch64 (ARM64) |
 | C 库 | glibc 或 musl（自动检测） |
 | 依赖 | luci-compat, luci-base, curl, openssl-util |
 | 存储 | 1.5GB 以上可用空间 |
 | 内存 | 推荐 2GB 及以上 |
+
+### 🖥️ 兼容性矩阵
+
+#### 支持的架构 × C 库组合
+
+| 架构 | C 库 | Node.js 来源 | 状态 |
+|------|------|-------------|------|
+| x86_64 | musl | [unofficial-builds.nodejs.org](https://unofficial-builds.nodejs.org/) | ✅ 已验证 |
+| x86_64 | glibc | [nodejs.org](https://nodejs.org/) 官方 | ✅ 支持 |
+| aarch64 | musl | 项目自托管（Alpine 打包，含完整依赖） | ✅ 已验证 |
+| aarch64 | glibc | [nodejs.org](https://nodejs.org/) 官方 | ✅ 支持 |
+| armv7l / armv6l | - | — | ❌ 不支持 |
+
+> **说明**：Node.js 22+ 不再提供 32 位 ARM 预编译包，因此不支持 armv7l/armv6l（如 MT7621 路由器）。
+
+#### 支持的 OpenWrt 版本
+
+| OpenWrt 版本 | LuCI 版本 | 验证状态 | 说明 |
+|-------------|-----------|---------|------|
+| 24.x (iStoreOS 24.10) | LuCI 24.x | ✅ 已验证 | 推荐版本 |
+| 23.05 | LuCI openwrt-23.05 | ✅ 支持 | |
+| 22.03 (iStoreOS 22.03) | LuCI openwrt-22.03 | ✅ 已验证 | 需自托管 Node.js（ARM64 musl） |
+| 21.02 | LuCI openwrt-21.02 | ⚠️ 应兼容 | 未测试，procd / LuCI API 兼容 |
+| 19.07 | LuCI openwrt-19.07 | ⚠️ 应兼容 | 未测试 |
+| 18.06 及更早 | LuCI 旧版 | ❌ 不保证 | procd API 可能不兼容 |
+
+> 插件使用标准 procd init 和 LuCI CBI (luci-compat) 接口，理论上兼容 OpenWrt 19.07+。
+
+#### 已验证的典型设备
+
+| 设备 / 平台 | 架构 | 系统 | 验证结果 |
+|------------|------|------|---------|
+| N100 / N5105 软路由 | x86_64 musl | iStoreOS 24.10.5 | ✅ 通过 |
+| 晶晨 S905 系列 (Cortex-A53) | aarch64 musl | iStoreOS 22.03.7 | ✅ 通过 |
+| Raspberry Pi 4/5 | aarch64 | OpenWrt 23.05+ | ✅ 应支持 |
+| FriendlyElec R4S/R5S | aarch64 | OpenWrt / FriendlyWrt | ✅ 应支持 |
+| 通用 x86 虚拟机 (PVE/ESXi) | x86_64 | OpenWrt 22.03+ | ✅ 应支持 |
+| MT7621 路由器 (如 Redmi AC2100) | mipsel / armv7l | — | ❌ 不支持 |
+
+#### ARM64 musl 特别说明
+
+ARM64 + musl 的 OpenWrt 设备（绝大多数 ARM64 路由器）使用**项目自托管的 Node.js 包**：
+
+- 基于 Alpine Linux 3.21 ARM64 环境打包
+- 包含完整的共享库（libstdc++、libssl、libicu 等）和 musl 动态链接器
+- 包含完整 ICU 国际化数据（`icudt74l.dat`）
+- 通过 wrapper 脚本使用打包的 musl 链接器启动，**不依赖系统库版本**
+- 因此即使系统是 OpenWrt 22.03（musl 1.2.3）也能正常运行 Alpine 3.21 编译的 Node.js
 
 ## 📦 安装
 
@@ -85,23 +133,7 @@ sh /etc/uci-defaults/99-openclaw
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache/*
 ```
 
-## � 一键部署下载
-
-OpenClaw 支持全平台一键部署，请根据你的设备选择对应方式。
-
-> **💡 提示**：OpenWrt 路由器请直接使用下方 [📦 安装](#-安装) 章节的命令，无需使用本节下载包。
-
-| 平台 | 下载链接 | 说明 |
-|------|----------|------|
-| 🐧 Linux (Ubuntu/Debian) | [夸克网盘](https://pan.quark.cn/s/c25bb5c20db1) | 或直接 `curl -fsSL "https://alist.910501.xyz/d/openclaw/install.sh?sign=RUSBfm1vy35Z-2S86e-Hr0s1bR2u_rATHXEpY888zi8=:0" \| bash` |
-| 🪟 Windows (Win10/Win11) | [夸克网盘](https://pan.quark.cn/s/af01a152dad7) | 解压后右键「一键安装.bat」以管理员身份运行 |
-| 🍎 macOS (Intel & Apple Silicon) | [夸克网盘](https://pan.quark.cn/s/99bad2c03e5c) | 解压后 `bash setup.sh` 授权，再双击「一键安装.command」 |
-| 🐂 飞牛 NAS (FnOS) | [夸克网盘](https://pan.quark.cn/s/fea2552a1b73) | 离线 FPK 包，在应用商店「手动安装」 |
-| 📡 OpenWrt 路由器 | [GitHub Releases](https://github.com/10000ge10000/luci-app-openclaw/releases/latest) | 见下方安装章节 |
-
----
-
-## �🔰 首次使用
+## 🔰 首次使用
 
 1. 打开 LuCI → 服务 → OpenClaw，点击「安装运行环境」
 2. 安装完成后服务会自动启动，点击「刷新页面」查看状态
@@ -134,64 +166,6 @@ luci-app-openclaw/
 └── .github/workflows/build.yml       # GitHub Actions
 ```
 
-## 📡 OpenWrt 路由器专属说明
-
-### 为什么选择路由器部署？
-
-路由器 24 小时在线，天然适合作为 AI 网关的宿主——家里所有设备共享同一个 AI 服务，Telegram / Discord 消息也能全天候响应，无需常开电脑。
-
-### 支持的设备
-
-| 架构 | 典型设备 | 支持状态 |
-|------|----------|----------|
-| x86_64 | N100 / N5105 软路由、iStoreOS 小主机 | ✅ 完全支持 |
-| aarch64 | Raspberry Pi 4/5、R4S、部分 ARM64 路由器 | ✅ 完全支持 |
-| 32 位 ARM | 老款 MT7620 / MT7621 路由器 | ❌ 不支持（Node.js 22 无 32 位包） |
-
-### 安装步骤（OpenWrt / iStoreOS）
-
-**第一步：安装 LuCI 插件**
-
-```bash
-# 推荐：.run 自解压包，一行搞定
-wget https://github.com/10000ge10000/luci-app-openclaw/releases/latest/download/luci-app-openclaw.run
-sh luci-app-openclaw.run
-```
-
-**第二步：安装 OpenClaw 运行环境**
-
-打开 LuCI → **服务** → **OpenClaw** → 点击「📦 安装运行环境」，脚本会自动完成：
-- 检测 CPU 架构（x86_64 / aarch64）
-- 检测 C 库类型（glibc / musl，绝大多数 OpenWrt 为 musl）
-- 下载对应 Node.js 22 预编译包
-- 安装 pnpm 和 OpenClaw 本体
-
-> **网络慢？** 可在路由器 SSH 中指定国内镜像加速 Node.js 下载：
-> ```bash
-> NODE_MIRROR=https://npmmirror.com/mirrors/node openclaw-env setup
-> ```
-
-**第三步：配置 AI 模型和消息渠道**
-
-进入「**配置管理**」页面，在内嵌 Web 终端中使用交互式向导，选数字即可完成配置，支持：
-- OpenAI / Anthropic Claude / Google Gemini / DeepSeek / GitHub Copilot / OpenRouter / 通义千问 / Grok / Groq / 硅基流动 等 12+ 家提供商
-- Telegram / Discord / 飞书 / Slack 消息渠道
-
-**第四步：用 Telegram 与 AI 对话**
-
-配置完 Telegram Bot Token 后，重启网关即可在 Telegram 直接给 Bot 发消息，路由器全天候在线响应。
-
-### 与其他平台脚本的区别
-
-| 对比项 | Linux/Mac/Win 脚本 | OpenWrt 插件 |
-|--------|-------------------|--------------|
-| 管理界面 | 命令行菜单 | LuCI 可视化界面 |
-| 开机自启 | 系统服务 / 守护进程 | procd 托管，崩溃自动重启 |
-| 安装包格式 | .sh / .bat / .command | .run / .ipk |
-| Node.js 来源 | 官方 + npm 镜像 | 自动检测 musl/glibc，按需拉取 |
-
----
-
 ## ❓ 常见问题
 
 **安装后 LuCI 菜单没有出现**
@@ -218,7 +192,11 @@ NODE_MIRROR=https://npmmirror.com/mirrors/node openclaw-env setup
 
 **是否支持 ARM 路由器**
 
-支持 aarch64（ARM64）。不支持 32 位 ARM，Node.js 22 没有 32 位预编译包。
+支持 aarch64（ARM64），包括晶晨 S905 系列、Raspberry Pi 4/5、R4S/R5S 等。ARM64 musl 设备使用项目自托管的 Node.js 包，自带完整依赖库，不依赖系统库版本。**不支持** 32 位 ARM（armv7l/armv6l），Node.js 22 没有 32 位预编译包。
+
+**ARM64 设备安装后 Node.js 显示 Segmentation fault**
+
+旧版 OpenWrt（如 22.03）的系统 musl 版本较低，与新版 Node.js 不兼容。请确保使用最新版本的 `openclaw-env`（v1.0.1+），它会自动下载包含独立 musl 链接器的自托管 Node.js 包。
 
 ## 🤝 贡献
 

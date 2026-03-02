@@ -176,6 +176,7 @@ HOME="$OC_DATA" \
 OPENCLAW_HOME="$OC_DATA" \
 OPENCLAW_STATE_DIR="${OC_DATA}/.openclaw" \
 OPENCLAW_CONFIG_PATH="$CONFIG_FILE" \
+NODE_ICU_DATA="${NODE_BASE}/share/icu" \
 NODE_BASE="$NODE_BASE" \
 OC_GLOBAL="$OC_GLOBAL" \
 OC_DATA="$OC_DATA" \
@@ -204,6 +205,7 @@ procd_set_param env \
 OC_CONFIG_PORT="$pty_port" \
 OC_PTY_TOKEN="$pty_token" \
 OC_CONFIG_SCRIPT="/usr/share/openclaw/oc-config.sh" \
+NODE_ICU_DATA="${NODE_BASE}/share/icu" \
 NODE_BASE="$NODE_BASE" \
 OC_GLOBAL="$OC_GLOBAL" \
 OC_DATA="$OC_DATA" \

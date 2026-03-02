@@ -40,6 +40,7 @@ export HOME="$OC_DATA"
 export OPENCLAW_HOME="$OC_DATA"
 export OPENCLAW_STATE_DIR="$OC_STATE_DIR"
 export OPENCLAW_CONFIG_PATH="$CONFIG_FILE"
+export NODE_ICU_DATA="${NODE_BASE}/share/icu"
 export PATH="${NODE_BASE}/bin:${OC_GLOBAL}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # ── 查找 openclaw 入口 ──
