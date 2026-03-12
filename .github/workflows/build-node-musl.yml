@@ -2,15 +2,10 @@ name: Build Node.js ARM64 musl
 
 on:
   workflow_dispatch:
-    inputs:
-      node_version:
-        description: 'Node.js 版本 (如 22.16.0)'
-        required: true
-        default: '22.16.0'
 
 jobs:
   build:
-    name: Build Node.js ${{ github.event.inputs.node_version }} ARM64 musl
+    name: Build Node.js ARM64 musl
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -19,6 +14,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Extract Node.js version from source
+        id: node_ver
+        run: |
+          NODE_VER=$(grep -oP 'NODE_VERSION="\$\{NODE_VERSION:-\K[0-9.]+' root/usr/bin/openclaw-env)
+          echo "version=${NODE_VER}" >> "$GITHUB_OUTPUT"
+          echo "Node.js version from openclaw-env: v${NODE_VER}"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -26,7 +28,7 @@ jobs:
 
       - name: Build Node.js ARM64 musl portable
         run: |
-          NODE_VER="${{ github.event.inputs.node_version }}"
+          NODE_VER="${{ steps.node_ver.outputs.version }}"
           mkdir -p dist
           echo "=== Building Node.js v${NODE_VER} ARM64 musl portable tarball ==="
           docker run --rm --platform linux/arm64 \
@@ -64,7 +66,7 @@ jobs:
             Node.js 官方 [unofficial-builds](https://unofficial-builds.nodejs.org/) 仅提供 x64 musl 构建，不提供 ARM64 musl。
             此 Release 使用 Alpine Linux ARM64 (musl libc) 环境打包。
 
-            **注意**: 实际 Node.js 版本可能与文件名中的版本略有差异（取决于 Alpine 仓库提供的版本），
-            但主版本号 (v22.x) 保证兼容。
+            **注意**: 文件名中的版本号为 Alpine `apk add nodejs` 实际安装的版本，
+            构建时自动从 `openclaw-env` 读取。
 
             `openclaw-env setup` 会在 ARM64 musl 设备上自动从此处下载。

@@ -1195,13 +1195,33 @@ configure_qq() {
 	echo -e "  ${BOLD}🐧 QQ 机器人配置${NC}"
 	echo ""
 
-	# 检查 qqbot 插件是否已安装
+	# 检查 qqbot 插件是否已安装并正常加载
 	local plugin_installed=0
+	local plugin_blocked=0
+	local qqbot_ext_dir="${OC_STATE_DIR}/extensions/openclaw-qqbot"
 	if [ -n "$OC_ENTRY" ] && [ -x "$NODE_BIN" ]; then
-		local plugin_check=$(oc_cmd plugins list 2>/dev/null | grep -i "qqbot" | grep -i "loaded\|disabled")
-		if [ -n "$plugin_check" ]; then
+		local plugin_list=$(oc_cmd plugins list 2>&1)
+		# 在表格输出中查找含 qqbot 的行是否也包含 loaded
+		if echo "$plugin_list" | grep -i "qqbot" | grep -qi "loaded"; then
 			plugin_installed=1
-			echo -e "  ${GREEN}✅ qqbot 插件已安装${NC}"
+			echo -e "  ${GREEN}✅ qqbot 插件已安装并加载${NC}"
+		elif echo "$plugin_list" | grep -qi "plugin not found.*openclaw-qqbot\|suspicious ownership"; then
+			# 插件目录存在但被阻止 (权限问题或 stale config)
+			if [ -d "$qqbot_ext_dir" ]; then
+				plugin_blocked=1
+				echo -e "  ${YELLOW}⚠️  qqbot 插件已安装但未能正常加载${NC}"
+				echo -e "  ${CYAN}正在修复插件目录权限...${NC}"
+				chown -R root:root "$qqbot_ext_dir" 2>/dev/null
+				echo -e "  ${GREEN}✅ 权限已修复，重启 Gateway 后生效${NC}"
+				plugin_installed=1
+			fi
+		elif [ -d "$qqbot_ext_dir" ] && [ -f "${qqbot_ext_dir}/openclaw.plugin.json" ]; then
+			# 目录存在、有 plugin.json 但未出现在插件列表 — 修复权限
+			echo -e "  ${YELLOW}⚠️  qqbot 插件目录存在但未能加载${NC}"
+			echo -e "  ${CYAN}正在修复插件目录权限...${NC}"
+			chown -R root:root "$qqbot_ext_dir" 2>/dev/null
+			echo -e "  ${GREEN}✅ 权限已修复${NC}"
+			plugin_installed=1
 		fi
 	fi
 
@@ -1216,20 +1236,36 @@ configure_qq() {
 			local install_out
 			install_out=$(oc_cmd plugins install @tencent-connect/openclaw-qqbot@latest 2>&1)
 			local install_rc=$?
+
+			# 关键: 安装后立即修复插件目录权限为 root (OpenClaw 安全策略要求)
+			if [ -d "$qqbot_ext_dir" ]; then
+				chown -R root:root "$qqbot_ext_dir" 2>/dev/null
+			fi
+
 			if [ $install_rc -eq 0 ]; then
 				echo -e "  ${GREEN}✅ qqbot 插件安装成功${NC}"
 				plugin_installed=1
 			else
-				echo -e "  ${RED}❌ 插件安装失败 (exit: $install_rc)${NC}"
-				echo -e "  ${DIM}${install_out}${NC}" | tail -5
+				# 安装命令返回非零，可能是因为 config invalid (死锁)
+				# 检查插件目录是否实际已存在 (说明下载成功但校验报错)
+				if [ -d "$qqbot_ext_dir" ] && [ -f "${qqbot_ext_dir}/openclaw.plugin.json" ]; then
+					echo -e "  ${YELLOW}⚠️  插件已下载但加载校验未通过 (exit: $install_rc)${NC}"
+					echo -e "  ${CYAN}这通常是因为配置中已有 qqbot 设置但插件未被信任。${NC}"
+					echo -e "  ${CYAN}已自动修复权限，重启 Gateway 后应能正常加载。${NC}"
+					plugin_installed=1
+				else
+					echo -e "  ${RED}❌ 插件安装失败 (exit: $install_rc)${NC}"
+					echo -e "  ${DIM}${install_out}${NC}" | tail -5
+					echo ""
+					echo -e "  ${YELLOW}插件安装失败，但你仍然可以先配置 QQ 机器人参数。${NC}"
+					echo -e "  ${YELLOW}稍后可手动安装: openclaw plugins install @tencent-connect/openclaw-qqbot@latest${NC}"
+				fi
 				echo ""
-				echo -e "  ${YELLOW}请手动安装: openclaw plugins install @tencent-connect/openclaw-qqbot@latest${NC}"
-				return
 			fi
 		else
-			echo -e "  ${YELLOW}已跳过插件安装。请先安装 qqbot 插件后再配置。${NC}"
-			echo -e "  ${CYAN}安装命令: openclaw plugins install @tencent-connect/openclaw-qqbot@latest${NC}"
-			return
+			echo -e "  ${YELLOW}已跳过插件安装，继续配置 QQ 机器人参数。${NC}"
+			echo -e "  ${CYAN}稍后安装命令: openclaw plugins install @tencent-connect/openclaw-qqbot@latest${NC}"
+			echo ""
 		fi
 	fi
 
@@ -1483,7 +1519,7 @@ telegram_pairing() {
 
 	echo ""
 	echo -e "  ${GREEN}╔══════════════════════════════════════════════════╗${NC}"
-	echo -e "  ${GREEN}║  请在 Telegram 中向 Bot 发送 /start             ║${NC}"
+	echo -e "  ${GREEN}║  请在 Telegram 中向 Bot 发送 /start              ║${NC}"
 	echo -e "  ${GREEN}║  然后回到这里按回车，脚本自动检测配对请求        ║${NC}"
 	echo -e "  ${GREEN}╚══════════════════════════════════════════════════╝${NC}"
 	echo ""
@@ -1999,26 +2035,39 @@ backup_restore_menu() {
 				echo -e "  ${CYAN}将从以下备份恢复:${NC}"
 				echo -e "  ${DIM}${latest}${NC}"
 				echo ""
-				echo -e "  ${YELLOW}⚠️  这会覆盖当前的 openclaw.json 配置！${NC}"
+				echo -e "  ${YELLOW}⚠️  这会还原备份中的所有配置和数据文件到原路径！${NC}"
 				prompt_with_default "确认恢复? (y/N)" "N" confirm_restore
 				if [ "$confirm_restore" = "y" ] || [ "$confirm_restore" = "Y" ]; then
-					# 备份当前配置
-					cp -f "$CONFIG_FILE" "${CONFIG_FILE}.pre-restore" 2>/dev/null
-					# 从 tar.gz 中提取 openclaw.json
-					local tmp_json="${CONFIG_FILE}.tmp"
+					# 验证备份中 openclaw.json 有效
+					local tmp_json="/tmp/oc-restore-check.json"
 					tar -xzf "$latest" --wildcards '*/openclaw.json' -O > "$tmp_json" 2>/dev/null
-					if [ -s "$tmp_json" ] && "$NODE_BIN" -e "JSON.parse(require('fs').readFileSync('${tmp_json}','utf8'))" 2>/dev/null; then
-						mv -f "$tmp_json" "$CONFIG_FILE"
-						chown openclaw:openclaw "$CONFIG_FILE" 2>/dev/null
-						echo -e "  ${GREEN}✅ 配置已恢复！原配置已保存为 openclaw.json.pre-restore${NC}"
-						echo ""
-						prompt_with_default "是否重启服务使配置生效? (Y/n)" "Y" do_restart
-						if [ "$do_restart" != "n" ] && [ "$do_restart" != "N" ]; then
-							restart_gateway
-						fi
-					else
+					if [ ! -s "$tmp_json" ] || ! "$NODE_BIN" -e "JSON.parse(require('fs').readFileSync('${tmp_json}','utf8'))" 2>/dev/null; then
 						rm -f "$tmp_json"
 						echo -e "  ${RED}❌ 备份中的配置文件无效，恢复已取消${NC}"
+					else
+						rm -f "$tmp_json"
+						# 备份当前配置
+						cp -f "$CONFIG_FILE" "${CONFIG_FILE}.pre-restore" 2>/dev/null
+						# 获取备份名前缀
+						local backup_name=$(tar -tzf "$latest" 2>/dev/null | head -1 | cut -d/ -f1)
+						if [ -z "$backup_name" ]; then
+							echo -e "  ${RED}❌ 备份文件格式无法识别${NC}"
+						else
+							echo -e "  ${DIM}正在还原文件...${NC}"
+							# 停止服务
+							/etc/init.d/openclaw stop >/dev/null 2>&1
+							sleep 2
+							# 提取 payload 到根目录 (还原到原始绝对路径)
+							tar -xzf "$latest" --strip-components=3 -C / "${backup_name}/payload/posix/" 2>&1
+							# 修复权限
+							chown -R openclaw:openclaw /opt/openclaw/data/.openclaw 2>/dev/null
+							echo -e "  ${GREEN}✅ 配置和数据已完整恢复！原配置已保存为 openclaw.json.pre-restore${NC}"
+							echo ""
+							prompt_with_default "是否重启服务使配置生效? (Y/n)" "Y" do_restart
+							if [ "$do_restart" != "n" ] && [ "$do_restart" != "N" ]; then
+								restart_gateway
+							fi
+						fi
 					fi
 				else
 					echo -e "  ${DIM}已取消${NC}"
@@ -2034,7 +2083,7 @@ main_menu() {
 	while true; do
 		echo ""
 		echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-		echo -e "${GREEN}║${NC}           ${BOLD}OpenClaw AI Gateway — OpenWrt 配置管理${NC}            ${GREEN}║${NC}"
+		echo -e "${GREEN}║${NC}           ${BOLD}OpenClaw AI Gateway — OpenWrt 配置管理${NC}             ${GREEN}║${NC}"
 		echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
 		echo ""
 		echo -e "  ${CYAN}1)${NC} 📋 查看当前配置"

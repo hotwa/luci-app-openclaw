@@ -3,71 +3,26 @@
 [![Bilibili](https://img.shields.io/badge/B%E7%AB%99-59438380-00a1d6?logo=bilibili)](https://space.bilibili.com/59438380)
 [![Blog](https://img.shields.io/badge/Blog-910501.xyz-orange)](https://blog.910501.xyz/)
 [![Build & Release](https://github.com/10000ge10000/luci-app-openclaw/actions/workflows/build.yml/badge.svg)](https://github.com/10000ge10000/luci-app-openclaw/actions/workflows/build.yml)
+[![Build Offline Bundle](https://github.com/10000ge10000/luci-app-openclaw/actions/workflows/build-offline.yml/badge.svg)](https://github.com/10000ge10000/luci-app-openclaw/actions/workflows/build-offline.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 
 [OpenClaw](https://github.com/nicepkg/openclaw) AI 网关的 OpenWrt LuCI 管理插件。
 
 在路由器上运行 OpenClaw，通过 LuCI 管理界面完成安装、配置和服务管理。
 
+<div align="center">
+  <img src="docs/images/1.png" alt="OpenClaw LuCI 管理界面" width="800" style="border-radius:8px;" />
+</div>
+
 **系统要求**
 
 | 项目 | 要求 |
 |------|------|
 | 架构 | x86_64 或 aarch64 (ARM64) |
-| C 库 | glibc 或 musl（自动检测） |
+| C 库 | musl（自动检测；离线包仅支持 musl） |
 | 依赖 | luci-compat, luci-base, curl, openssl-util |
 | 存储 | **1.5GB 以上可用空间** |
 | 内存 | 推荐 1GB 及以上 |
-
-### 🖥️ 兼容性矩阵
-
-#### 支持的架构 × C 库组合
-
-| 架构 | C 库 | Node.js 来源 | 状态 |
-|------|------|-------------|------|
-| x86_64 | musl | [unofficial-builds.nodejs.org](https://unofficial-builds.nodejs.org/) | ✅ 已验证 |
-| x86_64 | glibc | [nodejs.org](https://nodejs.org/) 官方 | ✅ 支持 |
-| aarch64 | musl | 项目自托管（Alpine 打包，含完整依赖） | ✅ 已验证 |
-| aarch64 | glibc | [nodejs.org](https://nodejs.org/) 官方 | ✅ 支持 |
-| mips / mipsel | - | — | ❌ 不支持 |
-| armv7l / armv6l | - | — | ❌ 不支持 |
-
-> **说明**：Node.js 22+ 仅提供 x86_64 和 aarch64 预编译包，不支持 MIPS（如 MT7620/MT7621 路由器）和 32 位 ARM（armv7l/armv6l）。大部分老旧路由器（MT76xx 系列）为 MIPS 架构，无法运行。
-
-#### 支持的 OpenWrt 版本
-
-| OpenWrt 版本 | LuCI 版本 | 验证状态 | 说明 |
-|-------------|-----------|---------|------|
-| 24.x (iStoreOS 24.10) | LuCI 24.x | ✅ 已验证 | 推荐版本 |
-| 23.05 | LuCI openwrt-23.05 | ✅ 支持 | |
-| 22.03 (iStoreOS 22.03) | LuCI openwrt-22.03 | ✅ 已验证 | 需自托管 Node.js（ARM64 musl） |
-| 21.02 | LuCI openwrt-21.02 | ⚠️ 应兼容 | 未测试，procd / LuCI API 兼容 |
-| 19.07 | LuCI openwrt-19.07 | ⚠️ 应兼容 | 未测试 |
-| 18.06 及更早 | LuCI 旧版 | ❌ 不保证 | procd API 可能不兼容 |
-
-> 插件使用标准 procd init 和 LuCI CBI (luci-compat) 接口，理论上兼容 OpenWrt 19.07+。
-
-#### 已验证的典型设备
-
-| 设备 / 平台 | 架构 | 系统 | 验证结果 |
-|------------|------|------|---------|
-| N100 / N5105 软路由 | x86_64 musl | iStoreOS 24.10.5 | ✅ 通过 |
-| 晶晨 S905 系列 (Cortex-A53) | aarch64 musl | iStoreOS 22.03.7 | ✅ 通过 |
-| Raspberry Pi 4/5 | aarch64 | OpenWrt 23.05+ | ✅ 应支持 |
-| FriendlyElec R4S/R5S | aarch64 | OpenWrt / FriendlyWrt | ✅ 应支持 |
-| 通用 x86 虚拟机 (PVE/ESXi) | x86_64 | OpenWrt 22.03+ | ✅ 应支持 |
-| MT7621 路由器 (如 Redmi AC2100) | mipsel | — | ❌ 不支持 (MIPS) |
-| MT7620/MT7628 路由器 | mipsel | — | ❌ 不支持 (MIPS) |
-
-#### ARM64 musl 特别说明
-
-ARM64 + musl 的 OpenWrt 设备（绝大多数 ARM64 路由器）使用**项目自托管的 Node.js 包**：
-
-- 基于 Alpine Linux 3.21 ARM64 环境打包
-- 包含完整的共享库（libstdc++、libssl、libicu 等）和 musl 动态链接器
-- 包含完整 ICU 国际化数据（`icudt74l.dat`）
-- 通过 `patchelf` 将 ELF interpreter 和 rpath 指向打包的 musl 链接器，**不依赖系统库版本**
-- 因此即使系统是 OpenWrt 22.03（musl 1.2.3）也能正常运行 Alpine 3.21 编译的 Node.js
 
 ## 📦 安装
 
@@ -135,6 +90,32 @@ sh /etc/uci-defaults/99-openclaw
 rm -f /tmp/luci-indexcache /tmp/luci-modulecache/*
 ```
 
+### 方式五：离线安装包（无需联网）
+
+适用于**无法联网**的路由器。安装包中已包含 Node.js + OpenClaw 运行环境，全程离线完成。
+
+**下载离线包**（在联网的电脑上）：
+
+前往 [Releases](https://github.com/10000ge10000/luci-app-openclaw/releases) 页面下载对应架构的 `_offline.run` 文件：
+
+| 架构 | 文件名 |
+|------|--------|
+| x86_64 | `luci-app-openclaw_*_x86_64-musl_offline.run` |
+| aarch64 (ARM64) | `luci-app-openclaw_*_aarch64-musl_offline.run` |
+
+**传输到路由器并安装**：
+
+```bash
+# 从电脑传输到路由器（替换为实际文件名和路由器 IP）
+scp luci-app-openclaw_*_offline.run root@192.168.1.1:/tmp/
+
+# SSH 登录路由器后执行安装
+sh /tmp/luci-app-openclaw_*_offline.run
+```
+
+> **提示**：离线包约 130MB，ARM 设备上安装需要 3-5 分钟（主要是解压时间）。
+> 安装完成后无需再运行 `openclaw-env setup`，直接进入 LuCI 配置即可。
+
 ## 🔰 首次使用
 
 1. 打开 LuCI → 服务 → OpenClaw，点击「安装运行环境」
@@ -164,8 +145,15 @@ luci-app-openclaw/
 │       └── share/openclaw/           # 配置终端资源
 ├── scripts/
 │   ├── build_ipk.sh                  # 本地 IPK 构建
-│   └── build_run.sh                  # .run 安装包构建
-└── .github/workflows/build.yml       # GitHub Actions
+│   ├── build_run.sh                  # .run 安装包构建
+│   ├── build_offline_run.sh          # 离线 .run 安装包构建
+│   ├── download_deps.sh              # 下载离线依赖 (Node.js + OpenClaw)
+│   ├── upload_openlist.sh            # 上传到网盘 (OpenList)
+│   └── build-node-musl.sh            # 编译 Node.js musl 静态链接版本
+└── .github/workflows/
+    ├── build.yml                     # 在线构建 + 发布
+    ├── build-offline.yml             # 离线包构建 + 发布
+    └── build-node-musl.yml           # Node.js musl 构建
 ```
 
 ## 🤝 贡献

@@ -81,6 +81,18 @@ function action_status()
 		pvf:close()
 	end
 
+	-- 安装方式检测 (离线 / 在线)
+	local olf = io.open("/usr/share/openclaw/.offline-install", "r")
+	if olf then
+		local content = olf:read("*a")
+		olf:close()
+		result.install_type = "offline"
+		result.install_date = content:match("date=([^\n]+)") or ""
+		result.install_arch = content:match("arch=([^\n]+)") or ""
+	else
+		result.install_type = "online"
+	end
+
 	-- 检查 Node.js
 	local node_bin = "/opt/openclaw/node/bin/node"
 	local f = io.open(node_bin, "r")
@@ -682,31 +694,73 @@ function action_backup()
 			http.write_json({ status = "error", message = "未找到备份文件，请先创建备份" })
 			return
 		end
-		local config_path = "/opt/openclaw/data/.openclaw/openclaw.json"
-		-- 先备份当前配置
-		sys.exec("cp -f " .. config_path .. " " .. config_path .. ".pre-restore 2>/dev/null")
-		-- 从 tar.gz 中提取 openclaw.json
-		local extract_cmd = "tar -xzf " .. restore_path .. " --wildcards '*/openclaw.json' -O > " .. config_path .. ".tmp 2>/dev/null"
-		sys.exec(extract_cmd)
-		-- 验证提取的文件是否有效 JSON
-		local check = sys.exec(node_bin .. " -e \"try{JSON.parse(require('fs').readFileSync('" .. config_path .. ".tmp','utf8'));console.log('OK')}catch(e){console.log('FAIL')}\" 2>/dev/null"):gsub("%s+", "")
-		if check == "OK" then
-			sys.exec("mv -f " .. config_path .. ".tmp " .. config_path)
-			sys.exec("chown openclaw:openclaw " .. config_path .. " 2>/dev/null")
-			-- 重启服务使配置生效
-			sys.exec("/etc/init.d/openclaw restart >/dev/null 2>&1 &")
+		local oc_data_dir = "/opt/openclaw/data/.openclaw"
+		local config_path = oc_data_dir .. "/openclaw.json"
+
+		-- 1) 先验证备份中的 openclaw.json 是否有效
+		local check_cmd = "tar -xzf " .. restore_path .. " --wildcards '*/openclaw.json' -O 2>/dev/null"
+		local json_content = sys.exec(check_cmd)
+		if not json_content or json_content == "" then
 			http.prepare_content("application/json")
-			http.write_json({
-				status = "ok",
-				action = "restore",
-				message = "配置已从备份恢复，服务正在重启。原配置已保存为 openclaw.json.pre-restore",
-				backup_path = restore_path
-			})
-		else
-			sys.exec("rm -f " .. config_path .. ".tmp")
+			http.write_json({ status = "error", message = "备份文件中未找到 openclaw.json" })
+			return
+		end
+		-- 写入临时文件并用 node 验证
+		local tmpfile = "/tmp/oc-restore-check.json"
+		local f = io.open(tmpfile, "w")
+		if f then f:write(json_content); f:close() end
+		local check = sys.exec(node_bin .. " -e \"try{JSON.parse(require('fs').readFileSync('" .. tmpfile .. "','utf8'));console.log('OK')}catch(e){console.log('FAIL')}\" 2>/dev/null"):gsub("%s+", "")
+		os.remove(tmpfile)
+		if check ~= "OK" then
 			http.prepare_content("application/json")
 			http.write_json({ status = "error", message = "备份文件中的配置无效，恢复已取消" })
+			return
 		end
+
+		-- 2) 备份当前配置
+		sys.exec("cp -f " .. config_path .. " " .. config_path .. ".pre-restore 2>/dev/null")
+
+		-- 3) 获取备份名前缀 (如: 2026-03-11T18-21-17.209Z-openclaw-backup)
+		--    备份结构: <backup_name>/payload/posix/<绝对路径>
+		local first_entry = sys.exec("tar -tzf " .. restore_path .. " 2>/dev/null | head -1"):gsub("%s+", "")
+		local backup_name = first_entry:match("^([^/]+)/") or ""
+		if backup_name == "" then
+			http.prepare_content("application/json")
+			http.write_json({ status = "error", message = "备份文件格式无法识别" })
+			return
+		end
+		local payload_prefix = backup_name .. "/payload/posix/"
+		-- strip 3 层: <backup_name> / payload / posix
+		local strip_count = 3
+
+		-- 4) 停止服务
+		sys.exec("/etc/init.d/openclaw stop >/dev/null 2>&1")
+		-- 等待端口释放
+		sys.exec("sleep 2")
+
+		-- 5) 提取 payload 文件到根目录 (还原到原始绝对路径)
+		--    注: --wildcards 与 --strip-components 组合在某些 tar 版本不兼容
+		--    使用精确路径前缀代替 wildcards
+		local extract_cmd = string.format(
+			"tar -xzf %s --strip-components=%d -C / '%s' 2>&1",
+			restore_path, strip_count, payload_prefix
+		)
+		local extract_out = sys.exec(extract_cmd)
+
+		-- 6) 修复权限
+		sys.exec("chown -R openclaw:openclaw " .. oc_data_dir .. " 2>/dev/null")
+
+		-- 7) 重启服务
+		sys.exec("/etc/init.d/openclaw start >/dev/null 2>&1 &")
+
+		http.prepare_content("application/json")
+		http.write_json({
+			status = "ok",
+			action = "restore",
+			message = "已从备份完整恢复所有配置和数据，服务正在重启。原配置已保存为 openclaw.json.pre-restore",
+			backup_path = restore_path,
+			extract_output = extract_out or ""
+		})
 	elseif action == "list" then
 		-- 返回结构化的备份文件列表(含类型/大小/时间)
 		local files_raw = sys.exec("ls -t " .. backup_dir .. "/*-openclaw-backup.tar.gz 2>/dev/null"):gsub("%s+$", "")
