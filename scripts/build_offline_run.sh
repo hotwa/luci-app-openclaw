@@ -226,7 +226,7 @@ if [ -x /etc/init.d/openclaw ]; then
 	# 等待进程退出和端口释放
 	sleep 2
 	# 确保 gateway 子进程也已退出
-	for pid in $(pgrep -f "openclaw-gateway|openclaw" 2>/dev/null); do
+	for pid in $(pgrep -f "node.*openclaw|openclaw.*gateway" 2>/dev/null); do
 		kill "$pid" 2>/dev/null
 	done
 	sleep 1

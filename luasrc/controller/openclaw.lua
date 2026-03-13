@@ -122,19 +122,20 @@ function action_status()
 	end
 
 	-- 网关端口检查
-	local gw_check = sys.exec("netstat -tlnp 2>/dev/null | grep -c ':" .. port .. " ' || echo 0"):gsub("%s+", "")
+	local gw_check_cmd = "if command -v ss >/dev/null 2>&1; then ss -tulnp 2>/dev/null | grep -c ':" .. port .. " ' || echo 0; else netstat -tulnp 2>/dev/null | grep -c ':" .. port .. " ' || echo 0; fi"
+		local gw_check = sys.exec(gw_check_cmd):gsub("%s+", "")
 	result.gateway_running = (tonumber(gw_check) or 0) > 0
 
 	-- 如果端口未监听但 procd 进程存在，说明正在启动中 (gateway 初始化需要数分钟)
 	if not result.gateway_running and enabled == "1" then
-		local procd_pid = sys.exec("pgrep -f 'openclaw.*gateway' 2>/dev/null | head -1"):gsub("%s+", "")
+		local procd_pid = sys.exec("pgrep -f 'openclaw.*gateway|node.*openclaw.*gateway' 2>/dev/null | head -1"):gsub("%s+", "")
 		if procd_pid ~= "" then
 			result.gateway_starting = true
 		end
 	end
 
 	-- PTY 端口检查
-	local pty_check = sys.exec("netstat -tlnp 2>/dev/null | grep -c ':" .. pty_port .. " ' || echo 0"):gsub("%s+", "")
+	local pty_check = sys.exec("netstat -tulnp 2>/dev/null | grep -c ':" .. pty_port .. " ' || echo 0"):gsub("%s+", "")
 	result.pty_running = (tonumber(pty_check) or 0) > 0
 
 	-- 读取当前活跃模型
@@ -173,7 +174,7 @@ function action_status()
 
 	-- PID 和内存
 	if result.gateway_running then
-		local pid = sys.exec("netstat -tlnp 2>/dev/null | awk '/:" .. port .. " /{split($NF,a,\"/\");print a[1];exit}'"):gsub("%s+", "")
+		local pid = sys.exec("netstat -tulnp 2>/dev/null | awk '/:" .. port .. " /{split($NF,a,\"/\");print a[1];exit}'"):gsub("%s+", "")
 		if pid and pid ~= "" then
 			result.pid = pid
 			-- 内存 (VmRSS from /proc)
