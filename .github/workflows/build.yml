@@ -7,9 +7,6 @@ on:
         description: '版本号 (留空则读取 VERSION 文件)'
         required: false
         default: ''
-      build_offline:
-        description: '是否构建离线安装包 (~130MB/架构)'
-        required: false
         type: boolean
         default: false
       create_release:
@@ -78,31 +75,9 @@ jobs:
           chmod +x scripts/build_ipk.sh
           sh scripts/build_ipk.sh dist
 
-      # ── 离线安装包 (可选) ──
 
-      - name: Setup Node.js (for offline build)
-        if: github.event.inputs.build_offline == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Download offline dependencies
-        if: github.event.inputs.build_offline == 'true'
-        run: |
-          chmod +x scripts/download_deps.sh
-          sh scripts/download_deps.sh .offline-cache
-        env:
-          NODE_VERSION: ${{ steps.build_versions.outputs.node_version }}
           OC_VERSION: ${{ steps.build_versions.outputs.oc_version }}
 
-      - name: Build offline .run (musl only)
-        if: github.event.inputs.build_offline == 'true'
-        run: |
-          chmod +x scripts/build_offline_run.sh
-          sh scripts/build_offline_run.sh dist/
-        env:
-          CACHE_DIR: .offline-cache
-          NODE_VERSION: ${{ steps.build_versions.outputs.node_version }}
 
       # ── 通用步骤 ──
 
@@ -148,16 +123,6 @@ jobs:
           OPENLIST_PATH: ${{ secrets.OPENLIST_PATH }}
           UPLOAD_MODE: online
 
-      - name: Upload to OpenList (offline)
-        if: github.event.inputs.upload_openlist == 'true' && github.event.inputs.build_offline == 'true'
-        run: |
-          sh scripts/upload_openlist.sh dist/
-        env:
-          OPENLIST_URL: ${{ secrets.OPENLIST_URL }}
-          OPENLIST_USER: ${{ secrets.OPENLIST_USER }}
-          OPENLIST_PASS: ${{ secrets.OPENLIST_PASS }}
-          OPENLIST_PATH: ${{ secrets.OPENLIST_PATH }}
-          UPLOAD_MODE: offline
 
       - name: Create Release
         if: github.event.inputs.create_release == 'true'
@@ -182,11 +147,7 @@ jobs:
             opkg install luci-app-openclaw_${{ steps.version.outputs.version }}-1_all.ipk
             ```
 
-            **离线安装** (无需联网，包含全部依赖)
             ```bash
-            # 将对应架构的 *_offline.run 传到路由器
-            scp luci-app-openclaw_*_offline.run root@路由器IP:/tmp/
-            ssh root@路由器IP "sh /tmp/luci-app-openclaw_*_offline.run"
             ```
 
             [使用文档](https://github.com/10000ge10000/luci-app-openclaw#readme) · [问题反馈](https://github.com/10000ge10000/luci-app-openclaw/issues) · [B站](https://space.bilibili.com/59438380) · [博客](https://blog.910501.xyz/)
