@@ -23,6 +23,8 @@
 | 存储 | **1.5GB 以上可用空间** |
 | 内存 | 推荐 1GB 及以上 |
 
+安装运行环境时可在 LuCI 弹窗中自定义“安装根目录 / 检测目录”，例如填写已挂载的 eMMC 路径 `/mnt/emmc`。OpenClaw 会自动把实际文件放到 `<路径>/openclaw/` 下。
+
 ## 📦 安装
 
 ### 方式一：.run 自解压包（推荐）
@@ -82,6 +84,9 @@ cp -r root/* /
 mkdir -p /usr/lib/lua/luci/controller /usr/lib/lua/luci/model/cbi/openclaw /usr/lib/lua/luci/view/openclaw
 cp luasrc/controller/openclaw.lua /usr/lib/lua/luci/controller/
 cp luasrc/model/cbi/openclaw/*.lua /usr/lib/lua/luci/model/cbi/openclaw/
+mkdir -p /usr/lib/lua/openclaw /usr/libexec
+cp luasrc/openclaw/paths.lua /usr/lib/lua/openclaw/
+cp root/usr/libexec/openclaw-paths.sh /usr/libexec/
 cp luasrc/view/openclaw/*.htm /usr/lib/lua/luci/view/openclaw/
 
 chmod +x /etc/init.d/openclaw /usr/bin/openclaw-env /usr/share/openclaw/oc-config.sh
@@ -92,7 +97,7 @@ rm -f /tmp/luci-indexcache /tmp/luci-modulecache/*
 
 ## 🔰 首次使用
 
-1. 打开 LuCI → 服务 → OpenClaw，点击「安装运行环境」
+1. 打开 LuCI → 服务 → OpenClaw，点击「安装运行环境」，按需填写安装根目录，例如 `/mnt/emmc`
 2. 安装完成后服务会自动启动，点击「刷新页面」查看状态
 3. 进入「Web 控制台」添加 AI 模型和 API Key
 4. 进入「配置管理」可使用向导配置消息渠道

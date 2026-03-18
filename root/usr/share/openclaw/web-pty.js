@@ -14,12 +14,36 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+function loadInstallRoot() {
+  if (process.env.OPENCLAW_INSTALL_ROOT) {
+    return normalizeInstallRoot(process.env.OPENCLAW_INSTALL_ROOT);
+  }
+  try {
+    const { execSync } = require('child_process');
+    return normalizeInstallRoot(execSync('uci -q get openclaw.main.install_root 2>/dev/null', {
+      encoding: 'utf8',
+      timeout: 3000,
+    }).trim());
+  } catch {
+    return '/opt';
+  }
+}
+
+function normalizeInstallRoot(value) {
+  const cleaned = (value || '').trim();
+  if (!cleaned || cleaned[0] !== '/' || /\s/.test(cleaned)) return '/opt';
+  const normalized = cleaned.replace(/\/+$/, '');
+  return normalized || '/';
+}
+
 // ── 配置 (OpenWrt 适配) ──
 const PORT = parseInt(process.env.OC_CONFIG_PORT || '18793', 10);
 const HOST = process.env.OC_CONFIG_HOST || '0.0.0.0'; // token 认证保护，可安全绑定所有接口
-const NODE_BASE = process.env.NODE_BASE || '/opt/openclaw/node';
-const OC_GLOBAL = process.env.OC_GLOBAL || '/opt/openclaw/global';
-const OC_DATA = process.env.OC_DATA || '/opt/openclaw/data';
+const INSTALL_ROOT = loadInstallRoot();
+const OC_ROOT = INSTALL_ROOT === '/' ? '/openclaw' : `${INSTALL_ROOT}/openclaw`;
+const NODE_BASE = process.env.NODE_BASE || `${OC_ROOT}/node`;
+const OC_GLOBAL = process.env.OC_GLOBAL || `${OC_ROOT}/global`;
+const OC_DATA = process.env.OC_DATA || `${OC_ROOT}/data`;
 const SCRIPT_PATH = process.env.OC_CONFIG_SCRIPT || '/usr/share/openclaw/oc-config.sh';
 const SSL_CERT = '/etc/uhttpd.crt';
 const SSL_KEY = '/etc/uhttpd.key';
@@ -170,6 +194,7 @@ class PtySession {
     const env = {
       ...process.env, TERM: 'xterm-256color', COLUMNS: String(this.cols), LINES: String(this.rows),
       COLORTERM: 'truecolor', LANG: 'en_US.UTF-8',
+      OPENCLAW_INSTALL_ROOT: INSTALL_ROOT,
       NODE_BASE, OC_GLOBAL, OC_DATA,
       HOME: OC_DATA,
       OPENCLAW_HOME: OC_DATA,

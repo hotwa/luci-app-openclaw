@@ -10,15 +10,15 @@ EXTRA_HELP="    setup            下载 Node.js 并安装 OpenClaw
         status_service   显示服务状态
         restart_gateway  仅重启 Gateway 实例 (不影响 Web PTY)"
 
-NODE_BASE="/opt/openclaw/node"
-OC_GLOBAL="/opt/openclaw/global"
-OC_DATA="/opt/openclaw/data"
+. /usr/libexec/openclaw-paths.sh
+oc_load_paths "$OPENCLAW_INSTALL_ROOT"
 
 # ── OverlayFS 兼容性修复 ──
 # Docker bind mount (/overlay/upper/opt/docker) 会导致 /opt 不可写
 # 解决: bind mount upper 层的 /opt 到合并视图的 /opt
 _oc_fix_opt() {
-	mkdir -p /opt/openclaw/.probe 2>/dev/null && { rmdir /opt/openclaw/.probe 2>/dev/null; return 0; }
+	oc_install_root_uses_opt_workaround "$OPENCLAW_INSTALL_ROOT" || return 0
+	mkdir -p "${OC_ROOT}/.probe" 2>/dev/null && { rmdir "${OC_ROOT}/.probe" 2>/dev/null; return 0; }
 	if [ -d /overlay/upper/opt ]; then
 		mkdir -p /overlay/upper/opt/openclaw 2>/dev/null
 		mount --bind /overlay/upper/opt /opt 2>/dev/null && return 0
@@ -306,6 +306,7 @@ HOME="$OC_DATA" \
 OPENCLAW_HOME="$OC_DATA" \
 OPENCLAW_STATE_DIR="${OC_DATA}/.openclaw" \
 OPENCLAW_CONFIG_PATH="$CONFIG_FILE" \
+OPENCLAW_INSTALL_ROOT="$OPENCLAW_INSTALL_ROOT" \
 NODE_ICU_DATA="${NODE_BASE}/share/icu" \
 NODE_BASE="$NODE_BASE" \
 OC_GLOBAL="$OC_GLOBAL" \
@@ -335,6 +336,7 @@ procd_set_param env \
 OC_CONFIG_PORT="$pty_port" \
 OC_PTY_TOKEN="$pty_token" \
 OC_CONFIG_SCRIPT="/usr/share/openclaw/oc-config.sh" \
+OPENCLAW_INSTALL_ROOT="$OPENCLAW_INSTALL_ROOT" \
 NODE_ICU_DATA="${NODE_BASE}/share/icu" \
 NODE_BASE="$NODE_BASE" \
 OC_GLOBAL="$OC_GLOBAL" \

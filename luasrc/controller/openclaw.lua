@@ -1,6 +1,86 @@
 -- luci-app-openclaw — LuCI Controller
 module("luci.controller.openclaw", package.seeall)
 
+local nixio_fs = require "nixio.fs"
+local util = require "luci.util"
+local oc_paths = require "openclaw.paths"
+
+local function get_install_root_from_uci()
+	return require("luci.model.uci").cursor():get("openclaw", "main", "install_root")
+end
+
+local function get_runtime_paths(install_root)
+	return oc_paths.derive_paths(install_root or get_install_root_from_uci())
+end
+
+local function trim(value)
+	if type(value) ~= "string" then
+		return ""
+	end
+	return value:gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function normalize_requested_install_root(value)
+	local cleaned = trim(value)
+	if cleaned == "" then
+		return true, get_runtime_paths().install_root
+	end
+	if cleaned:sub(1, 1) ~= "/" then
+		return false, nil, "安装根目录必须使用绝对路径，例如 /mnt/emmc"
+	end
+	if cleaned:match("%s") then
+		return false, nil, "安装根目录不能包含空白字符"
+	end
+	return true, oc_paths.normalize_install_root(cleaned)
+end
+
+local function get_node_bin(paths)
+	return paths.node_base .. "/bin/node"
+end
+
+local function get_config_file(paths)
+	return paths.oc_data .. "/.openclaw/openclaw.json"
+end
+
+local function shell_quote(value)
+	return util.shellquote(value or "")
+end
+
+local function path_type(path)
+	return nixio_fs.stat(path, "type")
+end
+
+local function directory_exists(path)
+	return path_type(path) == "dir"
+end
+
+local function file_exists(path)
+	return path_type(path) ~= nil
+end
+
+local function find_oc_entry(paths)
+	local search_dirs = {
+		paths.oc_global .. "/lib/node_modules/openclaw",
+		paths.oc_global .. "/node_modules/openclaw",
+		paths.node_base .. "/lib/node_modules/openclaw",
+	}
+
+	for _, dir_path in ipairs(search_dirs) do
+		if file_exists(dir_path .. "/openclaw.mjs") then
+			return dir_path .. "/openclaw.mjs", dir_path
+		elseif file_exists(dir_path .. "/dist/cli.js") then
+			return dir_path .. "/dist/cli.js", dir_path
+		end
+	end
+
+	return "", ""
+end
+
+local function runtime_installed(paths)
+	local oc_entry = find_oc_entry(paths)
+	return file_exists(get_node_bin(paths)) and oc_entry ~= ""
+end
+
 function index()
 	-- 主入口: 服务 → OpenClaw (🧠 作为菜单图标)
 	local page = entry({"admin", "services", "openclaw"}, alias("admin", "services", "openclaw", "basic"), _("OpenClaw"), 90)
@@ -53,6 +133,7 @@ function action_status()
 	local http = require "luci.http"
 	local sys = require "luci.sys"
 	local uci = require "luci.model.uci".cursor()
+	local paths = get_runtime_paths()
 
 	local port = uci:get("openclaw", "main", "port") or "18789"
 	local pty_port = uci:get("openclaw", "main", "pty_port") or "18793"
@@ -75,6 +156,8 @@ function action_status()
 		node_version = "",
 		oc_version = "",
 		plugin_version = "",
+		install_root = paths.install_root,
+		oc_root = paths.oc_root,
 	}
 
 	-- 插件版本
@@ -87,7 +170,7 @@ function action_status()
 	-- 安装方式检测 (离线 / 在线)
 
 	-- 检查 Node.js
-	local node_bin = "/opt/openclaw/node/bin/node"
+	local node_bin = get_node_bin(paths)
 	local f = io.open(node_bin, "r")
 	if f then
 		f:close()
@@ -97,9 +180,9 @@ function action_status()
 
 	-- OpenClaw 版本 (从 package.json 读取)
 	local oc_dirs = {
-		"/opt/openclaw/global/lib/node_modules/openclaw",
-		"/opt/openclaw/global/node_modules/openclaw",
-		"/opt/openclaw/node/lib/node_modules/openclaw",
+		paths.oc_global .. "/lib/node_modules/openclaw",
+		paths.oc_global .. "/node_modules/openclaw",
+		paths.node_base .. "/lib/node_modules/openclaw",
 	}
 	for _, d in ipairs(oc_dirs) do
 		local pf = io.open(d .. "/package.json", "r")
@@ -132,7 +215,7 @@ function action_status()
 	result.pty_running = (tonumber(pty_check) or 0) > 0
 
 	-- 读取当前活跃模型
-	local config_file = "/opt/openclaw/data/.openclaw/openclaw.json"
+	local config_file = get_config_file(paths)
 	local cf = io.open(config_file, "r")
 	if cf then
 		local content = cf:read("*a")
@@ -202,6 +285,7 @@ end
 function action_service_ctl()
 	local http = require "luci.http"
 	local sys = require "luci.sys"
+	local uci = require "luci.model.uci".cursor()
 
 	local action = http.formvalue("action") or ""
 
@@ -221,26 +305,59 @@ function action_service_ctl()
 	elseif action == "disable" then
 		sys.exec("/etc/init.d/openclaw disable 2>/dev/null")
 	elseif action == "setup" then
+		local valid_root, requested_install_root, root_error = normalize_requested_install_root(http.formvalue("install_root"))
+		if not valid_root then
+			http.prepare_content("application/json")
+			http.write_json({ status = "error", message = root_error })
+			return
+		end
+
+		local requested_paths = get_runtime_paths(requested_install_root)
+		local current_paths = get_runtime_paths()
+
+		if not directory_exists(requested_paths.install_root) then
+			http.prepare_content("application/json")
+			http.write_json({
+				status = "error",
+				message = "检测目录不存在: " .. requested_paths.install_root .. "。请先挂载或创建该目录后再安装。"
+			})
+			return
+		end
+
+		if runtime_installed(current_paths) and requested_paths.install_root ~= current_paths.install_root then
+			http.prepare_content("application/json")
+			http.write_json({
+				status = "error",
+				message = "当前已安装在 " .. current_paths.oc_root .. "。如需更换目录，请先卸载环境后再重新安装。"
+			})
+			return
+		end
+
 		-- 先清理旧日志和状态
 		sys.exec("rm -f /tmp/openclaw-setup.log /tmp/openclaw-setup.pid /tmp/openclaw-setup.exit")
 		-- 获取用户选择的版本 (stable=指定版本, latest=最新版)
 		local version = http.formvalue("version") or ""
-		local env_prefix = ""
+		local env_parts = {
+			"OPENCLAW_INSTALL_ROOT=" .. shell_quote(requested_paths.install_root)
+		}
 		if version == "stable" then
 			-- 稳定版: 读取 openclaw-env 中定义的 OC_TESTED_VERSION
 			local tested_ver = sys.exec("grep '^OC_TESTED_VERSION=' /usr/bin/openclaw-env 2>/dev/null | cut -d'\"' -f2"):gsub("%s+", "")
 			if tested_ver ~= "" then
-				env_prefix = "OC_VERSION=" .. tested_ver .. " "
+				table.insert(env_parts, 1, "OC_VERSION=" .. shell_quote(tested_ver))
 			end
 		elseif version ~= "" and version ~= "latest" then
 			-- 校验版本号格式 (仅允许数字、点、横线、字母)
 			if version:match("^[%d%.%-a-zA-Z]+$") then
-				env_prefix = "OC_VERSION=" .. version .. " "
+				table.insert(env_parts, 1, "OC_VERSION=" .. shell_quote(version))
 			end
 		end
+
+		uci:set("openclaw", "main", "install_root", requested_paths.install_root)
+		uci:commit("openclaw")
 		-- 后台安装，成功后自动启用并启动服务
 		-- 注: openclaw-env 脚本有 set -e，init_openclaw 中的非关键失败不应阻止启动
-		sys.exec("( " .. env_prefix .. "/usr/bin/openclaw-env setup > /tmp/openclaw-setup.log 2>&1; RC=$?; echo $RC > /tmp/openclaw-setup.exit; if [ $RC -eq 0 ]; then uci set openclaw.main.enabled=1; uci commit openclaw; /etc/init.d/openclaw enable 2>/dev/null; sleep 1; /etc/init.d/openclaw start >> /tmp/openclaw-setup.log 2>&1; fi ) & echo $! > /tmp/openclaw-setup.pid")
+		sys.exec("( " .. table.concat(env_parts, " ") .. " /usr/bin/openclaw-env setup > /tmp/openclaw-setup.log 2>&1; RC=$?; echo $RC > /tmp/openclaw-setup.exit; if [ $RC -eq 0 ]; then uci set openclaw.main.enabled=1; uci commit openclaw; /etc/init.d/openclaw enable 2>/dev/null; sleep 1; /etc/init.d/openclaw start >> /tmp/openclaw-setup.log 2>&1; fi ) & echo $! > /tmp/openclaw-setup.pid")
 		http.prepare_content("application/json")
 		http.write_json({ status = "ok", message = "安装已启动，请查看安装日志..." })
 		return
@@ -368,6 +485,7 @@ end
 function action_uninstall()
 	local http = require "luci.http"
 	local sys = require "luci.sys"
+	local paths = get_runtime_paths()
 
 	-- 停止服务
 	sys.exec("/etc/init.d/openclaw stop >/dev/null 2>&1")
@@ -376,7 +494,7 @@ function action_uninstall()
 	-- 设置 UCI enabled=0
 	sys.exec("uci set openclaw.main.enabled=0; uci commit openclaw 2>/dev/null")
 	-- 删除 Node.js + OpenClaw 运行环境 (包含所有插件: qqbot, 飞书等)
-	sys.exec("rm -rf /opt/openclaw")
+	sys.exec("rm -rf " .. shell_quote(paths.oc_root))
 	-- 清理旧数据迁移后可能残留的目录
 	sys.exec("rm -rf /root/.openclaw 2>/dev/null")
 	-- 清理临时文件
@@ -389,7 +507,7 @@ function action_uninstall()
 	http.prepare_content("application/json")
 	http.write_json({
 		status = "ok",
-		message = "运行环境已卸载。已清理: Node.js 运行环境 (/opt/openclaw)、所有插件 (qqbot/飞书等)、旧数据目录 (/root/.openclaw)、临时文件、LuCI 缓存。"
+		message = "运行环境已卸载。已清理: Node.js 运行环境 (" .. paths.oc_root .. ")、所有插件 (qqbot/飞书等)、旧数据目录 (/root/.openclaw)、临时文件、LuCI 缓存。"
 	})
 end
 
@@ -545,25 +663,10 @@ function action_backup()
 	local http = require "luci.http"
 	local sys = require "luci.sys"
 	local action = http.formvalue("action") or "create"
+	local paths = get_runtime_paths()
 
-	local node_bin = "/opt/openclaw/node/bin/node"
-	local oc_entry = ""
-
-	-- 查找 openclaw 入口
-	local search_dirs = {
-		"/opt/openclaw/global/lib/node_modules/openclaw",
-		"/opt/openclaw/global/node_modules/openclaw",
-		"/opt/openclaw/node/lib/node_modules/openclaw",
-	}
-	for _, d in ipairs(search_dirs) do
-		if nixio.fs.stat(d .. "/openclaw.mjs", "type") then
-			oc_entry = d .. "/openclaw.mjs"
-			break
-		elseif nixio.fs.stat(d .. "/dist/cli.js", "type") then
-			oc_entry = d .. "/dist/cli.js"
-			break
-		end
-	end
+	local node_bin = get_node_bin(paths)
+	local oc_entry = find_oc_entry(paths)
 
 	if oc_entry == "" then
 		http.prepare_content("application/json")
@@ -572,21 +675,29 @@ function action_backup()
 	end
 
 	local env_prefix = string.format(
-		"HOME=/opt/openclaw/data OPENCLAW_HOME=/opt/openclaw/data " ..
-		"OPENCLAW_STATE_DIR=/opt/openclaw/data/.openclaw " ..
-		"OPENCLAW_CONFIG_PATH=/opt/openclaw/data/.openclaw/openclaw.json " ..
-		"PATH=/opt/openclaw/node/bin:/opt/openclaw/global/bin:$PATH "
+		"OPENCLAW_INSTALL_ROOT=%s " ..
+		"HOME=%s OPENCLAW_HOME=%s " ..
+		"OPENCLAW_STATE_DIR=%s " ..
+		"OPENCLAW_CONFIG_PATH=%s " ..
+		"PATH=%s:%s:$PATH ",
+		shell_quote(paths.install_root),
+		shell_quote(paths.oc_data),
+		shell_quote(paths.oc_data),
+		shell_quote(paths.oc_data .. "/.openclaw"),
+		shell_quote(get_config_file(paths)),
+		shell_quote(paths.node_base .. "/bin"),
+		shell_quote(paths.oc_global .. "/bin")
 	)
 
 	-- 备份目录 (openclaw backup create 输出到 CWD，需要 cd)
-	local backup_dir = "/opt/openclaw/data/.openclaw/backups"
-	local cd_prefix = "mkdir -p " .. backup_dir .. " && cd " .. backup_dir .. " && "
+	local backup_dir = paths.oc_data .. "/.openclaw/backups"
+	local cd_prefix = "mkdir -p " .. shell_quote(backup_dir) .. " && cd " .. shell_quote(backup_dir) .. " && "
 
 	-- ── 辅助: 解析单个备份文件的 manifest 信息 ──
 	local function parse_backup_info(filepath)
 		local filename = filepath:match("([^/]+)$") or filepath
 		-- 文件大小
-		local st = nixio.fs.stat(filepath)
+			local st = nixio_fs.stat(filepath)
 		local size = st and st.size or 0
 		-- 从文件名提取时间戳: 2026-03-11T18-28-43.149Z-openclaw-backup.tar.gz
 		local ts = filename:match("^(%d%d%d%d%-%d%d%-%d%dT%d%d%-%d%d%-%d%d%.%d+Z)")
@@ -597,9 +708,9 @@ function action_backup()
 		end
 		-- 读取 manifest.json 判断备份类型
 		local backup_type = "unknown"
-		local manifest_json = sys.exec(
-			"tar --wildcards -xzf " .. filepath .. " '*/manifest.json' -O 2>/dev/null"
-		)
+			local manifest_json = sys.exec(
+				"tar --wildcards -xzf " .. shell_quote(filepath) .. " '*/manifest.json' -O 2>/dev/null"
+			)
 		if manifest_json and manifest_json ~= "" then
 			-- 简单字符串匹配，避免依赖 JSON 库
 			if manifest_json:match('"onlyConfig"%s*:%s*true') then
@@ -636,17 +747,17 @@ function action_backup()
 		}
 	end
 
-	if action == "create" then
-		local only_config = http.formvalue("only_config") or "1"
-		local backup_cmd
-		if only_config == "1" then
-			backup_cmd = cd_prefix .. env_prefix .. node_bin .. " " .. oc_entry .. " backup create --only-config --no-include-workspace 2>&1"
-		else
-			backup_cmd = cd_prefix .. "HOME=" .. backup_dir .. " " .. env_prefix .. node_bin .. " " .. oc_entry .. " backup create --no-include-workspace 2>&1"
-		end
+		if action == "create" then
+			local only_config = http.formvalue("only_config") or "1"
+			local backup_cmd
+			if only_config == "1" then
+				backup_cmd = cd_prefix .. env_prefix .. shell_quote(node_bin) .. " " .. shell_quote(oc_entry) .. " backup create --only-config --no-include-workspace 2>&1"
+			else
+				backup_cmd = cd_prefix .. "HOME=" .. shell_quote(backup_dir) .. " " .. env_prefix .. shell_quote(node_bin) .. " " .. shell_quote(oc_entry) .. " backup create --no-include-workspace 2>&1"
+			end
 		local output = sys.exec(backup_cmd)
 		-- 完整备份可能输出到 HOME，移动到 backup_dir
-		sys.exec("mv /opt/openclaw/data/*-openclaw-backup.tar.gz " .. backup_dir .. "/ 2>/dev/null")
+		sys.exec("mv " .. shell_quote(paths.oc_data) .. "/*-openclaw-backup.tar.gz " .. shell_quote(backup_dir .. "/") .. " 2>/dev/null")
 		-- 提取备份文件路径
 		local backup_path = output:match("([%S]+%.tar%.gz)")
 		http.prepare_content("application/json")
@@ -658,13 +769,13 @@ function action_backup()
 		})
 	elseif action == "verify" then
 		-- 找到最新的备份文件
-		local latest = sys.exec("ls -t " .. backup_dir .. "/*-openclaw-backup.tar.gz 2>/dev/null | head -1"):gsub("%s+", "")
+			local latest = sys.exec("ls -t " .. shell_quote(backup_dir) .. "/*-openclaw-backup.tar.gz 2>/dev/null | head -1"):gsub("%s+", "")
 		if latest == "" then
 			http.prepare_content("application/json")
 			http.write_json({ status = "error", message = "未找到备份文件，请先创建备份" })
 			return
 		end
-		local output = sys.exec(env_prefix .. node_bin .. " " .. oc_entry .. " backup verify " .. latest .. " 2>&1")
+			local output = sys.exec(env_prefix .. shell_quote(node_bin) .. " " .. shell_quote(oc_entry) .. " backup verify " .. shell_quote(latest) .. " 2>&1")
 		http.prepare_content("application/json")
 		http.write_json({
 			status = "ok",
@@ -683,20 +794,20 @@ function action_backup()
 				restore_path = backup_dir .. "/" .. target_file
 			end
 		end
-		if restore_path == "" or not nixio.fs.stat(restore_path, "type") then
-			-- fallback 到最新
-			restore_path = sys.exec("ls -t " .. backup_dir .. "/*-openclaw-backup.tar.gz 2>/dev/null | head -1"):gsub("%s+", "")
+			if restore_path == "" or not nixio_fs.stat(restore_path, "type") then
+				-- fallback 到最新
+				restore_path = sys.exec("ls -t " .. shell_quote(backup_dir) .. "/*-openclaw-backup.tar.gz 2>/dev/null | head -1"):gsub("%s+", "")
 		end
 		if restore_path == "" then
 			http.prepare_content("application/json")
 			http.write_json({ status = "error", message = "未找到备份文件，请先创建备份" })
 			return
 		end
-		local oc_data_dir = "/opt/openclaw/data/.openclaw"
+		local oc_data_dir = paths.oc_data .. "/.openclaw"
 		local config_path = oc_data_dir .. "/openclaw.json"
 
 		-- 1) 先验证备份中的 openclaw.json 是否有效
-		local check_cmd = "tar -xzf " .. restore_path .. " --wildcards '*/openclaw.json' -O 2>/dev/null"
+			local check_cmd = "tar -xzf " .. shell_quote(restore_path) .. " --wildcards '*/openclaw.json' -O 2>/dev/null"
 		local json_content = sys.exec(check_cmd)
 		if not json_content or json_content == "" then
 			http.prepare_content("application/json")
@@ -707,7 +818,7 @@ function action_backup()
 		local tmpfile = "/tmp/oc-restore-check.json"
 		local f = io.open(tmpfile, "w")
 		if f then f:write(json_content); f:close() end
-		local check = sys.exec(node_bin .. " -e \"try{JSON.parse(require('fs').readFileSync('" .. tmpfile .. "','utf8'));console.log('OK')}catch(e){console.log('FAIL')}\" 2>/dev/null"):gsub("%s+", "")
+			local check = sys.exec(shell_quote(node_bin) .. " -e \"try{JSON.parse(require('fs').readFileSync('" .. tmpfile .. "','utf8'));console.log('OK')}catch(e){console.log('FAIL')}\" 2>/dev/null"):gsub("%s+", "")
 		os.remove(tmpfile)
 		if check ~= "OK" then
 			http.prepare_content("application/json")
@@ -716,11 +827,11 @@ function action_backup()
 		end
 
 		-- 2) 备份当前配置
-		sys.exec("cp -f " .. config_path .. " " .. config_path .. ".pre-restore 2>/dev/null")
+			sys.exec("cp -f " .. shell_quote(config_path) .. " " .. shell_quote(config_path .. ".pre-restore") .. " 2>/dev/null")
 
 		-- 3) 获取备份名前缀 (如: 2026-03-11T18-21-17.209Z-openclaw-backup)
 		--    备份结构: <backup_name>/payload/posix/<绝对路径>
-		local first_entry = sys.exec("tar -tzf " .. restore_path .. " 2>/dev/null | head -1"):gsub("%s+", "")
+			local first_entry = sys.exec("tar -tzf " .. shell_quote(restore_path) .. " 2>/dev/null | head -1"):gsub("%s+", "")
 		local backup_name = first_entry:match("^([^/]+)/") or ""
 		if backup_name == "" then
 			http.prepare_content("application/json")
@@ -739,14 +850,14 @@ function action_backup()
 		-- 5) 提取 payload 文件到根目录 (还原到原始绝对路径)
 		--    注: --wildcards 与 --strip-components 组合在某些 tar 版本不兼容
 		--    使用精确路径前缀代替 wildcards
-		local extract_cmd = string.format(
-			"tar -xzf %s --strip-components=%d -C / '%s' 2>&1",
-			restore_path, strip_count, payload_prefix
-		)
+			local extract_cmd = string.format(
+				"tar -xzf %s --strip-components=%d -C / '%s' 2>&1",
+				shell_quote(restore_path), strip_count, payload_prefix
+			)
 		local extract_out = sys.exec(extract_cmd)
 
 		-- 6) 修复权限
-		sys.exec("chown -R openclaw:openclaw " .. oc_data_dir .. " 2>/dev/null")
+			sys.exec("chown -R openclaw:openclaw " .. shell_quote(oc_data_dir) .. " 2>/dev/null")
 
 		-- 7) 重启服务
 		sys.exec("/etc/init.d/openclaw start >/dev/null 2>&1 &")
@@ -761,7 +872,7 @@ function action_backup()
 		})
 	elseif action == "list" then
 		-- 返回结构化的备份文件列表(含类型/大小/时间)
-		local files_raw = sys.exec("ls -t " .. backup_dir .. "/*-openclaw-backup.tar.gz 2>/dev/null"):gsub("%s+$", "")
+			local files_raw = sys.exec("ls -t " .. shell_quote(backup_dir) .. "/*-openclaw-backup.tar.gz 2>/dev/null"):gsub("%s+$", "")
 		local backups = {}
 		if files_raw ~= "" then
 			for fpath in files_raw:gmatch("[^\n]+") do
@@ -789,7 +900,7 @@ function action_backup()
 			return
 		end
 		local del_path = backup_dir .. "/" .. target_file
-		if not nixio.fs.stat(del_path, "type") then
+			if not nixio_fs.stat(del_path, "type") then
 			http.prepare_content("application/json")
 			http.write_json({ status = "error", message = "备份文件不存在" })
 			return
@@ -815,10 +926,12 @@ end
 function action_check_system()
 	local http = require "luci.http"
 	local sys = require "luci.sys"
+	local valid_root, install_root, root_error = normalize_requested_install_root(http.formvalue("install_root"))
 
 	-- 最低要求配置
 	local MIN_MEMORY_MB = 1024      -- 1GB
 	local MIN_DISK_MB = 1536        -- 1.5GB
+	local paths = get_runtime_paths(install_root)
 
 	local result = {
 		memory_mb = 0,
@@ -826,9 +939,18 @@ function action_check_system()
 		disk_mb = 0,
 		disk_ok = false,
 		disk_path = "",
+		install_root = paths.install_root,
+		oc_root = paths.oc_root,
 		pass = false,
 		message = ""
 	}
+
+	if not valid_root then
+		result.message = root_error
+		http.prepare_content("application/json")
+		http.write_json(result)
+		return
+	end
 
 	-- 检测总内存 (从 /proc/meminfo 读取 MemTotal)
 	local meminfo = io.open("/proc/meminfo", "r")
@@ -845,17 +967,16 @@ function action_check_system()
 	result.memory_ok = result.memory_mb >= MIN_MEMORY_MB
 
 	-- 检测磁盘可用空间
-	-- 优先检测 /opt 所在分区，如果 /opt 不存在则检测 /overlay 或 /
-	local disk_paths = {"/opt", "/overlay", "/"}
-	for _, path in ipairs(disk_paths) do
-		local df_output = sys.exec("df -m " .. path .. " 2>/dev/null | tail -1 | awk '{print $4}'"):gsub("%s+", "")
+	if directory_exists(paths.install_root) then
+		local df_output = sys.exec("df -m " .. shell_quote(paths.install_root) .. " 2>/dev/null | tail -1 | awk '{print $4}'"):gsub("%s+", "")
 		if df_output and df_output ~= "" and tonumber(df_output) then
 			result.disk_mb = tonumber(df_output)
-			result.disk_path = path
-			break
+			result.disk_path = paths.install_root
 		end
+		result.disk_ok = result.disk_mb >= MIN_DISK_MB
+	else
+		result.message = "检测目录不存在: " .. paths.install_root .. "。请先挂载或创建该目录。"
 	end
-	result.disk_ok = result.disk_mb >= MIN_DISK_MB
 
 	-- 综合判断
 	result.pass = result.memory_ok and result.disk_ok
@@ -865,10 +986,13 @@ function action_check_system()
 		result.message = "系统配置检测通过"
 	else
 		local issues = {}
+		if result.message ~= "" then
+			table.insert(issues, result.message)
+		end
 		if not result.memory_ok then
 			table.insert(issues, string.format("内存不足: 当前 %d MB，需要至少 %d MB", result.memory_mb, MIN_MEMORY_MB))
 		end
-		if not result.disk_ok then
+		if result.message == "" and not result.disk_ok then
 			table.insert(issues, string.format("磁盘空间不足: 当前 %d MB 可用，需要至少 %d MB", result.disk_mb, MIN_DISK_MB))
 		end
 		result.message = table.concat(issues, "；")
