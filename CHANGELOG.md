@@ -4,6 +4,21 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [2.0.1] - 2026-03-26
+
+### 新增
+- **ARM64 musl Node.js 双源下载**: `openclaw-env` 现在默认优先从 GitHub `node-bins` release 下载 Node.js，失败后自动回退到 Gitea 镜像 release
+- **Node.js 24 预编译资产**: 新增 `node-v24.14.1-linux-arm64-musl.tar.xz`，供 ARM64 OpenWrt/iStoreOS 设备直接使用
+
+### 变更
+- **插件版本升级**: LuCI 插件包版本提升到 `2.0.1`，便于 iStore / opkg 识别升级
+- **默认 Node.js 版本升级**: ARM64 musl 默认下载版本从 `23.2.0` 升级到 `24.14.1`
+- **构建链路更新**: V2 Node.js musl 资产改为使用 Alpine `edge` 的 `nodejs` LTS 包构建，并校验产物必须精确命中 `24.14.1`
+
+### 适配
+- **适配 OpenClaw 3.22-2**: 插件侧安装脚本与默认运行时已按 OpenClaw `2026.3.22` 版本链路完成同步，LuCI 页面中的已验证版本同步更新
+- **Gitea 镜像同步**: `node-bins` release 的 GitHub / Gitea 两侧资产与说明已保持一致，确保 ARM64 musl 设备在主源异常时仍可回退下载
+
 ## [2.0.0] - 2026-03-16
 
 ### 重大变更
