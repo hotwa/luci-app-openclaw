@@ -4,18 +4,127 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
-## [2.0.1] - 2026-03-26
+## [2.0.1] - 2026-03-30
 
-### 新增
+### 适配 OpenClaw v2026.3.28
+
+#### 版本变更
+- **OC_TESTED_VERSION**: 从 2026.3.13 更新到 2026.3.28
+- **磁盘空间要求**: 从 1.5GB 提升到 2GB (OpenClaw v2026.3.28 包体积约 200MB)
+
+#### 兼容性分析
+- **Node.js 版本**: v2026.3.28 要求 >= 22.14.0 (降低了要求，从 v2026.3.13 的 >= 22.16.0)
+- **入口文件**: 无变化，仍为 `openclaw.mjs`
+- **配置 Schema**: 向后兼容，无需迁移
+- **API**: 向后兼容
+
+#### 包体积变化
+- v2026.3.13: ~94MB (4,730 文件)
+- v2026.3.28: ~200MB (19,887 文件)
+- 文件数量增加 4x+，包体积增加 2x+
+
+#### 新增 Plugin SDK 导出 (20+)
+
+新增 AI 提供商原生支持 SDK:
+- `plugin-sdk/xai` — xAI (Grok) API 支持
+- `plugin-sdk/vllm` — vLLM 高性能推理引擎支持
+- `plugin-sdk/ollama` — Ollama 本地模型原生 SDK
+- `plugin-sdk/openai` — OpenAI 原生 SDK
+- `plugin-sdk/sglang` — SGLang 推理引擎支持
+- `plugin-sdk/chutes` — Chutes AI 平台支持
+- `plugin-sdk/google` — Google AI SDK
+- `plugin-sdk/nvidia` — NVIDIA NIM API 支持
+- `plugin-sdk/venice` — Venice AI 支持
+- `plugin-sdk/minimax` — MiniMax API 原生 SDK
+- `plugin-sdk/mistral` — Mistral AI 原生 SDK
+- `plugin-sdk/qianfan` — 百度千帆大模型 SDK
+
+新增功能模块 SDK:
+- `plugin-sdk/zod` — Zod schema 验证支持
+- `plugin-sdk/setup` — 安装配置向导 SDK
+- `plugin-sdk/routing` — 模型路由配置 SDK
+- `plugin-sdk/speech` — 语音处理 SDK
+- `plugin-sdk/browser` — 浏览器自动化 SDK
+
+新增顶级导出:
+- `extension-api` — 扩展 API 入口 (用于插件开发)
+
+#### 移除的依赖
+
+以下渠道依赖被移除 (功能整合到核心或不再维护):
+- `grammy` — Telegram Bot 框架 (改用内置实现)
+- `@grammyjs/runner` — Telegram 运行器
+- `@grammyjs/transformer-throttler` — Telegram 限流器
+- `@whiskeysockets/baileys` — WhatsApp Web API (改用 matrix-js-sdk)
+
+#### 新增依赖
+
+核心依赖:
+- `uuid@^13.0.0` — UUID 生成
+- `gaxios@7.1.4` — Google API HTTP 客户端
+- `matrix-js-sdk@41.2.0` — Matrix 协议支持 (替代 WhatsApp)
+- `@anthropic-ai/vertex-sdk@^0.14.4` — Anthropic Vertex AI 支持
+
+#### 依赖版本升级
+
+核心依赖:
+- `ws`: 8.19.0 → 8.20.0
+- `hono`: 4.12.7 → 4.12.9
+- `file-type`: 21.3.2 → 22.0.0
+- `undici`: 7.24.1 → 7.24.6
+- `sqlite-vec`: 0.1.7-alpha.2 → 0.1.7
+
+AI/ML 依赖:
+- `@mariozechner/pi-ai`: 0.58.0 → 0.63.1
+- `@mariozechner/pi-tui`: 0.58.0 → 0.63.1
+- `@mariozechner/pi-agent-core`: 0.58.0 → 0.63.1
+- `@mariozechner/pi-coding-agent`: 0.58.0 → 0.63.1
+- `@modelcontextprotocol/sdk`: 1.27.1 → 1.28.0
+- `@agentclientprotocol/sdk`: 0.16.1 → 0.17.0
+- `@aws-sdk/client-bedrock`: 3.1009.0 → 3.1019.0
+
+#### pnpm 配置变更
+
+新增 `ignoredBuiltDependencies`:
+- `@discordjs/opus` — 跳过构建
+- `koffi` — 跳过构建
+
+新增 `onlyBuiltDependencies`:
+- `@tloncorp/tlon-skill` — 需要构建
+
+#### 中间版本变更 (v2026.3.22 ~ v2026.3.24)
+
+v2026.3.22:
+- Node.js 最低版本从 22.16.0 降低到 22.14.0
+- 大量 plugin-sdk 模块重构
+
+v2026.3.23:
+- 修复版本发布问题
+- 稳定性改进
+
+v2026.3.24:
+- 依赖安全更新
+- 性能优化
+
+#### 升级建议
+
+1. **磁盘空间**: 确保至少 2GB 可用空间
+2. **Node.js**: v22.16.0 完全兼容，无需降级
+3. **配置迁移**: 现有配置向后兼容，无需手动干预
+4. **备份**: 升级前建议执行 `openclaw backup create --only-config`
+
+### hotwa 增强
+
+#### 新增
 - **ARM64 musl Node.js 双源下载**: `openclaw-env` 现在默认优先从 GitHub `node-bins` release 下载 Node.js，失败后自动回退到 Gitea 镜像 release
 - **Node.js 24 预编译资产**: 新增 `node-v24.14.1-linux-arm64-musl.tar.xz`，供 ARM64 OpenWrt/iStoreOS 设备直接使用
 
-### 变更
+#### 变更
 - **插件版本升级**: LuCI 插件包版本提升到 `2.0.1`，便于 iStore / opkg 识别升级
 - **默认 Node.js 版本升级**: ARM64 musl 默认下载版本从 `23.2.0` 升级到 `24.14.1`
 - **构建链路更新**: V2 Node.js musl 资产改为使用 Alpine `edge` 的 `nodejs` LTS 包构建，并校验产物必须精确命中 `24.14.1`
 
-### 适配
+#### 兼容补充
 - **适配 OpenClaw 3.22-2**: 插件侧安装脚本与默认运行时已按 OpenClaw `2026.3.22` 版本链路完成同步，LuCI 页面中的已验证版本同步更新
 - **Gitea 镜像同步**: `node-bins` release 的 GitHub / Gitea 两侧资产与说明已保持一致，确保 ARM64 musl 设备在主源异常时仍可回退下载
 

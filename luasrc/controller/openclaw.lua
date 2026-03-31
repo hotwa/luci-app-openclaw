@@ -924,16 +924,16 @@ end
 -- ═══════════════════════════════════════════
 -- 系统配置检测 API (安装前检测)
 -- 检测内存和磁盘空间是否满足最低要求
--- 要求: 内存 > 1GB, 磁盘可用空间 > 1.5GB
+-- 要求: 内存 > 1GB, 磁盘可用空间 > 2GB (OpenClaw v2026.3.28+ 包体积约 200MB)
 -- ═══════════════════════════════════════════
 function action_check_system()
 	local http = require "luci.http"
 	local sys = require "luci.sys"
 	local valid_root, install_root, root_error = normalize_requested_install_root(http.formvalue("install_root"))
 
-	-- 最低要求配置
+	-- 最低要求配置 (v2026.3.28: 包体积 ~200MB, 建议 2GB 可用空间)
 	local MIN_MEMORY_MB = 1024      -- 1GB
-	local MIN_DISK_MB = 1536        -- 1.5GB
+	local MIN_DISK_MB = 2048        -- 2GB
 	local paths = get_runtime_paths(install_root)
 
 	local result = {

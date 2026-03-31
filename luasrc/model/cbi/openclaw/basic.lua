@@ -138,7 +138,7 @@ act.cfgvalue = function(self, section)
 	html[#html+1] = 'logEl.textContent+="检测目录: "+(r.install_root||installRoot)+"\\n";'
 	html[#html+1] = 'logEl.textContent+="实际安装: "+(r.oc_root||_ocLastInstallPath)+"\\n";'
 	html[#html+1] = 'logEl.textContent+="内存: "+r.memory_mb+" MB (需要 ≥ 1024 MB) — "+(r.memory_ok?"✅ 通过":"❌ 不达标")+"\\n";'
-	html[#html+1] = 'logEl.textContent+="磁盘: "+r.disk_mb+" MB 可用"+(r.disk_path?" [检测路径 "+r.disk_path+"]":"")+" (需要 ≥ 1536 MB) — "+(r.disk_ok?"✅ 通过":"❌ 不达标")+"\\n";'
+	html[#html+1] = 'logEl.textContent+="磁盘: "+r.disk_mb+" MB 可用"+(r.disk_path?" [检测路径 "+r.disk_path+"]":"")+" (需要 ≥ 2048 MB) — "+(r.disk_ok?"✅ 通过":"❌ 不达标")+"\\n";'
 	html[#html+1] = 'logEl.textContent+="\\n";'
 	html[#html+1] = 'if(!r.pass){'
 	html[#html+1] = 'ocCloseSetupDialog();'
