@@ -3,9 +3,19 @@
 
 CURRENT_INSTALL_ROOT=$(uci -q get openclaw.main.install_root)
 if [ -z "$CURRENT_INSTALL_ROOT" ]; then
-	uci set openclaw.main.install_root='/opt'
+	LEGACY_INSTALL_ROOT=$(uci -q get openclaw.main.install_path)
+	if [ -n "$LEGACY_INSTALL_ROOT" ]; then
+		CURRENT_INSTALL_ROOT="$LEGACY_INSTALL_ROOT"
+	else
+		CURRENT_INSTALL_ROOT='/opt'
+	fi
+	uci set openclaw.main.install_root="$CURRENT_INSTALL_ROOT"
 	uci commit openclaw
-	CURRENT_INSTALL_ROOT='/opt'
+fi
+
+if uci -q get openclaw.main.install_path >/dev/null 2>&1; then
+	uci -q delete openclaw.main.install_path
+	uci commit openclaw
 fi
 
 . /usr/libexec/openclaw-paths.sh

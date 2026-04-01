@@ -121,7 +121,7 @@ function encodeWSFrame(data, opcode = 0x01) {
 
 // ── PTY 进程管理 ──
 class PtySession {
-  constructor(socket) {
+  constructor(socket, initCmd = '') {
     this.socket = socket;
     this.proc = null;
     this.cols = 80;
@@ -132,6 +132,7 @@ class PtySession {
     this._MAX_SPAWN_RETRIES = 5;
     this._pingTimer = null;
     this._pongReceived = true;
+    this.initCmd = initCmd;
     activeSessions++;
     console.log(`[oc-config] Session created (active: ${activeSessions}/${MAX_SESSIONS})`);
     this._setupWSReader();
@@ -221,12 +222,13 @@ class PtySession {
         return true;
       } catch { return false; }
     })();
+    const scriptArgs = this.initCmd ? [SCRIPT_PATH, this.initCmd] : [SCRIPT_PATH];
     if (hasScript) {
-      this.proc = spawn('script', ['-qc', `stty rows ${this.rows} cols ${this.cols} 2>/dev/null; printf '\\e[?2004l'; sh "${SCRIPT_PATH}"`, '/dev/null'],
+      this.proc = spawn('script', ['-qc', `stty rows ${this.rows} cols ${this.cols} 2>/dev/null; printf '\\e[?2004l'; sh "${scriptArgs.join('" "')}"`, '/dev/null'],
         { stdio: ['pipe', 'pipe', 'pipe'], env, detached: true });
     } else {
       console.log('[oc-config] "script" command not found, falling back to sh (install util-linux-script for full PTY support)');
-      this.proc = spawn('sh', [SCRIPT_PATH],
+      this.proc = spawn('sh', scriptArgs,
         { stdio: ['pipe', 'pipe', 'pipe'], env, detached: true });
     }
 
@@ -312,9 +314,9 @@ function handleUpgrade(req, socket, head) {
   // 认证: 验证查询参数中的 token
   // 每次连接时实时读取 UCI token (安装/升级可能重新生成 token)
   const currentToken = loadAuthToken() || AUTH_TOKEN;
+  const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (currentToken) {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const clientToken = url.searchParams.get('token') || '';
+    const clientToken = urlObj.searchParams.get('token') || '';
     if (clientToken !== currentToken) {
       console.log(`[oc-config] WS auth failed from ${socket.remoteAddress}`);
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
@@ -322,6 +324,8 @@ function handleUpgrade(req, socket, head) {
       return;
     }
   }
+
+  const initCmd = urlObj.searchParams.get('cmd') || '';
 
   // 并发会话限制
   if (activeSessions >= MAX_SESSIONS) {
@@ -343,8 +347,8 @@ function handleUpgrade(req, socket, head) {
 
   socket.write(handshake, () => {
     if (head && head.length > 0) socket.unshift(head);
-    new PtySession(socket);
-    console.log('[oc-config] PTY session started');
+    new PtySession(socket, initCmd);
+    console.log(`[oc-config] PTY session started (cmd=${initCmd || 'menu'})`);
   });
 }
 
