@@ -4,6 +4,179 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [2.0.4] - 2026-04-10
+
+### 适配 OpenClaw v2026.4.9
+
+本次更新适配 OpenClaw 最新稳定版本 (2026.4.9)，包含多项破坏性配置变更处理和安全策略适配。
+
+#### 版本变更
+- **OC_TESTED_VERSION**: 从 2026.3.28 更新到 2026.4.9 (跨 12 个版本)
+- **Node.js 版本**: 保持 22.16.0 (v2026.4.x 最低要求 >= 22.14.0)
+
+#### 更新日志 UI 深度优化
+
+参照 GitHub Releases 和 App Store 更新页面的设计规范，重构「检测升级」按钮触发的更新日志显示区域：
+
+- **Markdown 渲染引擎重构** (`ocMarkdownToHtml` 函数):
+  - 中英文混排字体栈优化：`PingFang SC` / `Microsoft YaHei` / `Noto Sans SC` + 系统字体回退
+  - 字体渲染增强：`text-rendering: optimizeLegibility` + 抗锯齿平滑
+  - 标题层级比例重构：一级标题 (20px) → 二级 (17px) → 三级 (15px) → 四级 (14px)
+  - 代码块样式：圆角边框 + 等宽字体栈 (`SF Mono`, Consolas, Menlo)
+  - 链接悬停效果：底部边框渐显动画
+  - 列表标记美化：统一的 `list-style-position: inside` + 行高优化 (1.75)
+
+- **版本状态徽章设计**:
+  - 「有新版本」状态：渐变金色背景 + 橙色边框
+  - 「已是最新」状态：渐变绿色背景 + 绿色边框
+  - 「无法检查」状态：灰色背景 + 中性边框
+  - 版本号使用等宽字体徽章样式，增强可读性
+
+- **更新日志容器设计**:
+  - 卡片式布局：圆角 + 微阴影 + 白色背景
+  - 版本标题栏：渐变背景 + 蓝色版本徽章 + GitHub 跳转链接
+  - 内容区滚动条美化：`scrollbar-width: thin` + 自定义颜色
+  - 操作按钮区：分组设计 + 阴影增强
+
+- **视觉细节优化**:
+  - 段落间距：12px 统一间距
+  - 行高优化：中文场景 1.75-1.8
+  - 字间距微调：标题 `-0.02em`，正文 `0.01em`
+  - 颜色层级：主标题 `#1f2328` → 正文 `#32383f` → 次要文本 `#656d76`
+
+#### 破坏性变更处理 (v2026.4.5)
+
+OpenClaw v2026.4.5 移除了多项旧版配置别名，本版本新增自动清理逻辑：
+
+- **已废弃配置清理**: `sync_uci_to_json()` 新增清理以下废弃字段
+  - `talk.voiceId` / `talk.apiKey` — 语音功能配置迁移
+  - `browser.ssrfPolicy.allowPrivateNetwork` — SSRF 策略重构
+  - `hooks.internal.handlers` — 内部钩子迁移
+  - `channel.*.allow` / `group.*.allow` / `room.*.allow` — 迁移到 `enabled` 字段
+  - `agents.defaults.cliBackends` — CLI 后端配置废弃
+
+- **配置迁移工具集成**: 服务启动时自动调用 `openclaw doctor --fix` 迁移遗留配置
+
+#### 权限模型适配 (v2026.4.7/4.9)
+
+OpenClaw 新增了严格的环境变量安全检查，阻止危险环境变量覆盖：
+
+- **环境变量安全审计**: `start_service()` 注入环境变量前进行路径安全验证
+  - 阻止包含特殊字符 (`$`, `` ` ``, `|`, `&`) 的路径
+  - 阻止 `/proc/*`, `/sys/*`, `/dev/*` 等危险目录
+  - 确保 `JAVA_HOME`, `RUST_*`, `GIT_*`, `KUBECONFIG`, `AWS_*` 等危险变量不被意外注入
+
+- **命令授权策略更新**: 适配 v2026.4.7 的权限收紧
+  - `/allowlist add/remove` 现需要所有者授权 (LuCI 会话验证已满足)
+  - `gateway config.apply` 阻止修改 exec 审批路径
+
+#### 安全更新
+
+- **依赖安全**: `basic-ftp` 强制升级到 5.2.1 (修复 CRLF 命令注入漏洞 CVE)
+- **浏览器 SSRF**: 新增安全策略配置选项 (默认不启用内网访问白名单)
+
+#### 改进
+
+- **配置验证增强**: 服务启动时先执行配置 schema 验证，失败时自动尝试修复
+- **iframe 安全头修补**: 适配 v2026.4.x 新的安全头位置
+  - v2026.4.x 将 `X-Frame-Options` 和 `frame-ancestors` 设置从 `gateway-cli-*.js` 迁移到 `server.impl-*.js`
+  - `patch_iframe_headers()` 函数现已支持两个位置的安全头修补
+  - 解决 Web 控制台 iframe 嵌入被阻止的问题
+- **错误提示优化**: 配置迁移失败时输出详细的诊断信息
+- **移除 Gemini CLI 安装**: OpenClaw v2026.4.x 已废弃 `google-gemini-cli-auth` 插件
+  - 节省约 155MB 磁盘空间
+  - 减少安装时间约 30~60 秒
+  - 用户配置 Google Gemini 请使用 API Key 方式 (推荐)
+- **修复微信插件加载失败**: 清理 jiti 缓存目录解决权限冲突
+  - jiti 编译 TypeScript 时在 `/tmp/jiti` 创建缓存
+  - 服务启动前自动清理，避免 openclaw 用户无法写入
+
+#### 修复 (2026-04-10)
+
+- **权限修复 EACCES 错误**: `doctor --fix` 以 root 运行后创建的文件导致 Gateway 无法写入
+  - 根因: `doctor --fix` 在服务启动时以 root 身份执行，可能创建 root 所有的配置文件
+  - 症状: `EACCES: permission denied, open '.../agents/main/agent/models.json.xxx.tmp'`
+  - 修复: `init.d/openclaw` 在 `doctor --fix` 后自动修复非 extensions 目录权限
+  - 同时修复 `openclaw-env factory-reset` 后的权限问题
+
+- **OpenWrt 兼容性**: 无 `ss` 命令时 Gateway 重启检测失败
+  - 根因: `oc-config-interactive.js` 直接调用 `ss` 命令，部分精简固件未安装
+  - 修复: 优先使用 `ss`，不存在时回退到 `netstat`
+
+- **新增交互式菜单引擎**: `oc-menu-engine.js`
+  - 方向键导航、搜索过滤、粘贴支持 (Bracketed Paste Mode)
+  - 纯 Node.js 实现，零外部依赖
+  - 用于 SSH 命令行配置体验优化
+
+#### 技术细节
+
+**新增函数**:
+- `_validate_path()`: 环境变量路径安全验证
+- `_run_config_migration()`: 执行 OpenClaw 官方配置迁移工具
+
+**修改文件**:
+- `root/etc/init.d/openclaw`: 配置同步逻辑、环境变量注入、权限修复
+- `root/usr/bin/openclaw-env`: OC_TESTED_VERSION 版本号、factory-reset 权限修复
+- `root/usr/share/openclaw/oc-config-interactive.js`: ss/netstat 兼容性
+- `root/usr/share/openclaw/oc-menu-engine.js`: 新增交互式菜单引擎
+
+---
+
+## [2.0.3] - 2026-04-03
+
+### 修复
+
+- **微信插件安装失败 (exit: 127)**: 当 Gateway 未运行或路径检测失败时，`npx` 命令指向不存在的路径导致安装失败
+  - 根因: `get_actual_install_path()` 依赖 Gateway 进程运行时返回正确路径，Gateway 未启动时返回默认值 `/opt/openclaw`，但实际安装路径可能是 `/mnt/data/openclaw` 等自定义路径
+  - 修复: `action_wechat_install()` 和 `action_wechat_upgrade_plugin()` 新增多层路径校验逻辑：
+    1. 先检查默认检测到的 `npx` 是否存在
+    2. 不存在时回退到 UCI 配置的 `install_path`
+    3. 最后遍历常见备用路径 (`/mnt/data/openclaw`, `/opt/openclaw`, `/overlay/upper/opt/openclaw`)
+    4. 所有路径都无效时返回明确的错误提示，而非模糊的 exit 127
+
+---
+
+## [2.0.2] - 2026-03-31
+
+### 新增功能
+
+#### 适配微信通道插件 (openclaw-weixin)
+
+- **多账号操作面板**: 新增完善的多账号登录登出功能机制，重构 Lua API (`login_cmd`/`logout_cmd`/`install_cmd`/`upgrade_cmd`) 使其支持精细化的多实例运行调度。
+- **登录交互优化**: 解决由于未完成登录流程导致的环境锁定问题，后台新增自愈能力 (`pkill -f 'channels login.*openclaw-weixin'`)。
+- **安全沙箱无缝衔接**: 修复了 Web 触发命令时的 `blocked plugin candidate: suspicious ownership` 安全警告，完整平滑降权至 `openclaw` 用户组执行。
+
+**💡 微信通道使用细节提醒：**
+1. **多开隔离**：所有上号的微信机器人互不干扰，尽管在 Web 控制台大盘上聊天日志看起来像在一起，但由于后端存在独立的 `BotID / AccountID / Session` 多元结构体鉴权区分，他们在底层是**绝对隔离**的记忆！
+2. **退出登录**：遇到登录卡死或想强制下线，点击界面对应微信号的“退出登录”即可强制切除对应后端通道进程。
+
+#### 支持自定义安装路径
+
+- **功能描述**: 用户现在可以将 OpenClaw 运行环境安装到自定义路径（如第二块硬盘 `/mnt/data`）
+- **LuCI 界面**: 安装对话框增加自定义路径输入框，支持实时检测目标路径的可用空间
+- **系统检测**: 安装前系统配置检测会检测自定义路径的磁盘空间，而非默认的 `/opt`
+- **服务状态**: 状态 API 返回当前安装路径信息
+- **最小空间提示**: 安装界面提示最小需要 2GB 可用空间
+
+#### 技术实现
+
+- 新增 UCI 配置项 `openclaw.main.install_path`，默认值为 `/opt`
+- 程序会在用户指定路径下自动创建 `openclaw` 目录进行安装
+  - 例如：用户输入 `/mnt/data`，实际安装路径为 `/mnt/data/openclaw`
+- 所有脚本和配置文件支持从 UCI 读取自定义路径：
+  - `openclaw-env`: 通过 `OC_INSTALL_PATH` 环境变量或 UCI 配置
+  - `init.d/openclaw`: 启动时从 UCI 读取路径
+  - `oc-config.sh`: 支持自定义路径的环境变量
+  - `profile.d/openclaw.sh`: SSH 环境变量支持
+  - `uci-defaults/99-openclaw`: 首次安装初始化支持
+
+
+### 感谢
+
+感谢 @hotwa 提供的修改思路和建议。
+
+---
+
 ## [2.0.1] - 2026-03-30
 
 ### 适配 OpenClaw v2026.3.28

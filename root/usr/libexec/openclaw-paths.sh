@@ -26,6 +26,7 @@ oc_normalize_install_root() {
 
 oc_read_install_root_from_uci() {
 	if command -v uci >/dev/null 2>&1; then
+		uci -q get openclaw.main.install_path 2>/dev/null || \
 		uci -q get openclaw.main.install_root 2>/dev/null
 	fi
 }

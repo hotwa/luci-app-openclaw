@@ -16,7 +16,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PKG_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 
 # ── 配置 ──
-GITHUB_REPO="10000ge10000/luci-app-openclaw"
+GITHUB_REPO="hotwa/luci-app-openclaw"
 OPENLIST_URL="http://124.243.178.237:15244"
 OPENLIST_USER="admin"
 OPENLIST_PASS="mingmenmama"
