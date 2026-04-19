@@ -2190,6 +2190,17 @@ reset_to_defaults() {
 								if(d.plugins.allow.length!==beforeLen)modified=true;
 							}
 
+							// 清除 plugins.installs 中的渠道插件安装记录
+							if(d.plugins && d.plugins.installs){
+								const channelPlugins=['openclaw-qqbot','@tencent-connect/openclaw-qqbot','openclaw-lark','@larksuite/openclaw-lark'];
+								channelPlugins.forEach(p=>{
+									if(d.plugins.installs[p]){
+										delete d.plugins.installs[p];
+										modified=true;
+									}
+								});
+							}
+
 							if(modified){
 								fs.writeFileSync('${CONFIG_FILE}',JSON.stringify(d,null,2));
 								console.log('CLEANED');
@@ -2199,21 +2210,17 @@ reset_to_defaults() {
 					chown openclaw:openclaw "$CONFIG_FILE" 2>/dev/null || true
 				fi
 
-				# 清除飞书扩展目录中的敏感数据 (保留插件本体)
+				# 清除飞书扩展目录，确保下次配置时重新安装干净版本
 				local feishu_ext_dir="${OC_STATE_DIR}/extensions/openclaw-lark"
 				if [ -d "$feishu_ext_dir" ]; then
-					# 只清除配置文件，保留插件代码
-					rm -f "${feishu_ext_dir}/.credentials"* 2>/dev/null
-					rm -f "${feishu_ext_dir}/config.json" 2>/dev/null
-					rm -rf "${feishu_ext_dir}/.cache" 2>/dev/null
-					echo -e "  ${CYAN}已清理飞书插件缓存数据${NC}"
+					rm -rf "${feishu_ext_dir}" 2>/dev/null
+					echo -e "  ${CYAN}已移除飞书插件残留目录${NC}"
 				fi
 
-				# 清除 QQ 机器人扩展目录中的敏感数据
+				# 清除 QQ 机器人扩展目录，确保下次配置时重新安装干净版本
 				local qqbot_ext_dir="${OC_STATE_DIR}/extensions/openclaw-qqbot"
 				if [ -d "$qqbot_ext_dir" ]; then
-					rm -f "${qqbot_ext_dir}/credentials"* 2>/dev/null
-					rm -f "${qqbot_ext_dir}/config.json" 2>/dev/null
+					rm -rf "${qqbot_ext_dir}" 2>/dev/null
 				fi
 
 				echo -e "  ${GREEN}✅ 渠道配置已清除${NC}"

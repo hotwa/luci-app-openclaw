@@ -4,6 +4,7 @@ module("luci.controller.openclaw", package.seeall)
 local GITHUB_REPO = "hotwa/luci-app-openclaw"
 local GITHUB_RELEASES_URL = "https://github.com/" .. GITHUB_REPO .. "/releases"
 local GITHUB_API_RELEASES_URL = "https://api.github.com/repos/" .. GITHUB_REPO .. "/releases"
+local jsonc = require "luci.jsonc"
 
 function index()
 	-- 主入口: 服务 → OpenClaw (🧠 作为菜单图标)
@@ -94,6 +95,25 @@ local function get_install_path()
 	return base_path .. "/openclaw"
 end
 
+local function get_gateway_procd_state(sys)
+	local raw = sys.exec([[ubus call service list '{"name":"openclaw"}' 2>/dev/null]])
+	if not raw or raw == "" then
+		return nil
+	end
+
+	local data = jsonc.parse(raw)
+	local gateway = data and data.openclaw and data.openclaw.instances and data.openclaw.instances.gateway
+	if not gateway then
+		return nil
+	end
+
+	return {
+		running = gateway.running == true,
+		pid = tostring(gateway.pid or ""),
+		exit_code = tonumber(gateway.exit_code),
+	}
+end
+
 -- 确保网关端口可用：检测占用并尝试优雅停止或强制杀死占用进程
 local function ensure_port_free(port)
 	local sys = require "luci.sys"
@@ -168,6 +188,8 @@ function action_status()
 		install_path = install_path,
 		gateway_running = false,
 		gateway_starting = false,
+		gateway_failed = false,
+		gateway_exit_code = "",
 		pty_running = false,
 		pid = "",
 		memory_kb = 0,
@@ -217,14 +239,24 @@ function action_status()
 
 	-- 网关端口检查
 	local gw_check_cmd = "if command -v ss >/dev/null 2>&1; then ss -tulnp 2>/dev/null | grep -c ':" .. port .. " ' || echo 0; else netstat -tulnp 2>/dev/null | grep -c ':" .. port .. " ' || echo 0; fi"
-		local gw_check = sys.exec(gw_check_cmd):gsub("%s+", "")
+	local gw_check = sys.exec(gw_check_cmd):gsub("%s+", "")
 	result.gateway_running = (tonumber(gw_check) or 0) > 0
+	local gateway_state = get_gateway_procd_state(sys)
+	if gateway_state and gateway_state.exit_code ~= nil then
+		result.gateway_exit_code = tostring(gateway_state.exit_code)
+	end
 
-	-- 如果端口未监听但 procd 进程存在，说明正在启动中 (gateway 初始化需要数分钟)
+	-- 端口未监听时优先依赖 procd 状态，避免把 crash loop 误报为“正在启动”
 	if not result.gateway_running and enabled == "1" then
-		local procd_pid = sys.exec("pgrep -f 'openclaw.*gateway' 2>/dev/null | head -1"):gsub("%s+", "")
-		if procd_pid ~= "" then
+		if gateway_state and gateway_state.running then
 			result.gateway_starting = true
+		elseif gateway_state and gateway_state.exit_code ~= nil and gateway_state.exit_code ~= 0 then
+			result.gateway_failed = true
+		else
+			local procd_pid = sys.exec("pgrep -f 'openclaw.*gateway' 2>/dev/null | head -1"):gsub("%s+", "")
+			if procd_pid ~= "" then
+				result.gateway_starting = true
+			end
 		end
 	end
 
