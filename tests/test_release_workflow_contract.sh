@@ -28,8 +28,10 @@ fi
 
 [ -f "$GITEA_SYNC_SCRIPT" ] || fail "optional Gitea sync helper script should exist"
 grep -Fq "/mirror-sync" "$GITEA_SYNC_SCRIPT" || fail "Gitea sync script should trigger mirror refresh before publishing"
+grep -Fq "/tags/" "$GITEA_SYNC_SCRIPT" || fail "Gitea sync script should wait for mirrored tags before creating releases"
 grep -Fq "/releases/tags/" "$GITEA_SYNC_SCRIPT" || fail "Gitea sync script should detect existing releases by tag"
 grep -Fq "/releases/" "$GITEA_SYNC_SCRIPT" || fail "Gitea sync script should create or update releases"
 grep -Fq "/assets" "$GITEA_SYNC_SCRIPT" || fail "Gitea sync script should upload release assets"
+grep -Fq "GITEA_TAG_WAIT_ATTEMPTS" "$GITEA_SYNC_SCRIPT" || fail "Gitea sync script should allow tag wait retries to be configured"
 
 echo "ok"

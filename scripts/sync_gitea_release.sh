@@ -70,10 +70,36 @@ print(urllib.parse.quote(sys.argv[1]))
 PY
 }
 
+wait_for_tag() {
+  local encoded_tag attempts delay
+  encoded_tag=$(urlencode "$TAG")
+  attempts="${GITEA_TAG_WAIT_ATTEMPTS:-12}"
+  delay="${GITEA_TAG_WAIT_DELAY:-5}"
+
+  echo "==> 等待 Gitea tag 同步: ${TAG}"
+  while [ "$attempts" -gt 0 ]; do
+    if curl -fsS -H "$AUTH_HEADER" "$(api_url "/tags/${encoded_tag}")" >/dev/null 2>&1; then
+      echo "==> 已确认 Gitea tag 存在: ${TAG}"
+      return 0
+    fi
+
+    attempts=$((attempts - 1))
+    if [ "$attempts" -le 0 ]; then
+      break
+    fi
+
+    sleep "$delay"
+  done
+
+  echo "错误: 等待 Gitea tag 同步超时: ${TAG}" >&2
+  return 1
+}
+
 echo "==> 尝试同步 Gitea 镜像"
 curl -fsS -X POST \
   -H "$AUTH_HEADER" \
   "$(api_url "/mirror-sync")" >/dev/null || echo "警告: mirror-sync 调用失败，继续尝试发布 release" >&2
+wait_for_tag
 
 BODY_JSON=$(json_escape_file "$BODY_FILE")
 PAYLOAD=$(
