@@ -1,6 +1,9 @@
 name: Build & Release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -25,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,6 +40,8 @@ jobs:
           INPUT_VER="${{ github.event.inputs.version }}"
           if [ -n "$INPUT_VER" ]; then
             VER="$INPUT_VER"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            VER="${GITHUB_REF_NAME#v}"
           elif [ -f VERSION ]; then
             VER="$(cat VERSION | tr -d '[:space:]')"
           else
@@ -95,6 +102,13 @@ jobs:
             echo "CHANGELOG_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Generate release body
+        run: |
+          chmod +x scripts/gen-release-body.sh
+          mkdir -p .release
+          bash scripts/gen-release-body.sh "${{ steps.version.outputs.version }}" CHANGELOG.md .release
+          mv ".release/${{ steps.version.outputs.version }}.md" .release/release-body.md
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -104,7 +118,7 @@ jobs:
           compression-level: 0
 
       - name: Upload to OpenList (online)
-        if: github.event.inputs.upload_openlist == 'true'
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.upload_openlist == 'true'
         run: |
           chmod +x scripts/upload_openlist.sh
           sh scripts/upload_openlist.sh dist/
@@ -115,26 +129,28 @@ jobs:
           OPENLIST_PATH: ${{ secrets.OPENLIST_PATH }}
 
       - name: Create Release
-        if: github.event.inputs.create_release == 'true'
+        if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.version }}
-          files: dist/*
+          files: |
+            dist/*.run
+            dist/*.ipk
           draft: false
           prerelease: false
-          body: |
-            ${{ steps.changelog.outputs.content }}
+          body_path: .release/release-body.md
 
-            ---
-
-            **在线安装** (需联网，自动下载 Node.js + OpenClaw)
-            ```
-            # iStoreOS
-            sh luci-app-openclaw_${{ steps.version.outputs.version }}.run
-
-            # OpenWrt
-            opkg install luci-app-openclaw_${{ steps.version.outputs.version }}-1_all.ipk
-            ```
-
-[使用文档](https://github.com/hotwa/luci-app-openclaw#readme) · [问题反馈](https://github.com/hotwa/luci-app-openclaw/issues) · [B站](https://space.bilibili.com/59438380) · [博客](https://blog.910501.xyz/)
+      - name: Gitea Release Sync (optional)
+        if: (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')) && env.GITEA_TOKEN != ''
+        continue-on-error: true
+        env:
+          GITEA_API_BASE: https://gitea.jmsu.top/api/v1
+          GITEA_REPO: lingyuzeng/luci-app-openclaw
+        run: |
+          chmod +x scripts/sync_gitea_release.sh
+          bash scripts/sync_gitea_release.sh \
+            "${{ steps.version.outputs.version }}" \
+            "${{ steps.version.outputs.tag }}" \
+            dist \
+            .release/release-body.md
