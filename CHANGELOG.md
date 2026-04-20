@@ -4,6 +4,14 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [2.0.6] - 2026-04-20
+
+### 修复
+
+- **更新检查限流兜底**: `action_check_update()` 在 GitHub API 被匿名限流或暂时不可用时，新增 GitHub Release 页面跳转和 Gitea Release API / 页面跳转 fallback，避免 `plugin_latest` 留空
+- **现网兼容性增强**: 针对 OpenWrt / iStoreOS 常见的 GitHub API `403 rate limit exceeded` 场景，仍可恢复最新版本号并继续判断是否需要升级
+- **更新检查契约增强**: 扩展 `tests/test_update_check_contract.sh`，锁定 API + redirect + Gitea fallback 的行为，防止后续回归
+
 ## [2.0.5] - 2026-04-20
 
 ### 修复

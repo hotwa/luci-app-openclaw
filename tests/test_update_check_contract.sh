@@ -13,6 +13,11 @@ fail() {
 
 grep -Fq "local function compare_plugin_versions" "$CONTROLLER" || fail "update check should define a dedicated plugin version comparator"
 grep -Fq "plugin_has_update = compare_plugin_versions(plugin_latest, plugin_current) > 0" "$CONTROLLER" || fail "update check should only flag upgrades when the latest version is newer"
+grep -Fq "fetch_release_metadata_from_api" "$CONTROLLER" || fail "update check should still probe release APIs for structured metadata"
+grep -Fq "fetch_release_tag_from_redirect" "$CONTROLLER" || fail "update check should fall back to release redirect pages when APIs are unavailable"
+grep -Fq "url_effective" "$CONTROLLER" || fail "update check should inspect the final redirect URL to recover the latest tag"
+grep -Fq "GITEA_API_RELEASES_URL" "$CONTROLLER" || fail "update check should define a Gitea API fallback"
+grep -Fq "GITEA_RELEASES_URL" "$CONTROLLER" || fail "update check should define a Gitea release-page fallback"
 
 if grep -Fq 'plugin_current ~= plugin_latest' "$CONTROLLER"; then
 	fail "update check should not treat any version mismatch as an upgrade"

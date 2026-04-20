@@ -4,6 +4,9 @@ module("luci.controller.openclaw", package.seeall)
 local GITHUB_REPO = "hotwa/luci-app-openclaw"
 local GITHUB_RELEASES_URL = "https://github.com/" .. GITHUB_REPO .. "/releases"
 local GITHUB_API_RELEASES_URL = "https://api.github.com/repos/" .. GITHUB_REPO .. "/releases"
+local GITEA_REPO = "lingyuzeng/luci-app-openclaw"
+local GITEA_RELEASES_URL = "https://gitea.jmsu.top/" .. GITEA_REPO .. "/releases"
+local GITEA_API_RELEASES_URL = "https://gitea.jmsu.top/api/v1/repos/" .. GITEA_REPO .. "/releases"
 local jsonc = require "luci.jsonc"
 
 local function compare_plugin_versions(lhs, rhs)
@@ -29,6 +32,54 @@ local function compare_plugin_versions(lhs, rhs)
 	end
 
 	return 0
+end
+
+local function normalize_release_tag(tag)
+	tag = tostring(tag or ""):gsub("^v", ""):gsub("%s+", "")
+	return tag
+end
+
+local function decode_release_body(body)
+	body = tostring(body or "")
+	if body == "" then
+		return ""
+	end
+
+	return body:gsub("\\n", "\n"):gsub("\\r", ""):gsub('\\"', '"'):gsub("\\\\", "\\")
+end
+
+local function fetch_release_metadata_from_api(sys, api_base)
+	local payload = sys.exec("curl -fsS --connect-timeout 5 --max-time 10 '" .. api_base .. "/latest' 2>/dev/null")
+	if not payload or payload == "" then
+		return "", ""
+	end
+
+	local data = jsonc.parse(payload)
+	if type(data) == "table" then
+		local tag = normalize_release_tag(data.tag_name)
+		local body = decode_release_body(data.body)
+		return tag, body
+	end
+
+	local tag = normalize_release_tag(payload:match('"tag_name"%s*:%s*"([^"]+)"'))
+	local body = decode_release_body(payload:match('"body"%s*:%s*"(.-)"[,}%]\n ]'))
+	return tag, body
+end
+
+local function fetch_release_tag_from_redirect(sys, releases_base)
+	local effective = sys.exec(
+		"curl -fsSL -o /dev/null -w '%{url_effective}' --connect-timeout 5 --max-time 10 '" ..
+		releases_base .. "/latest' 2>/dev/null"
+	)
+	effective = tostring(effective or ""):gsub("%s+", "")
+
+	if effective == "" then
+		return ""
+	end
+
+	local tag = effective:match("/releases/tag/([^/?#]+)$")
+		or effective:match("/releases/download/([^/?#]+)/")
+	return normalize_release_tag(tag)
 end
 
 function index()
@@ -511,21 +562,29 @@ function action_check_update()
 	local release_notes = ""
 	local plugin_has_update = false
 
-	-- 使用 GitHub API 获取最新 release (tag + body)
-	local gh_json = sys.exec("curl -sf --connect-timeout 5 --max-time 10 '" .. GITHUB_API_RELEASES_URL .. "/latest' 2>/dev/null")
-	if gh_json and gh_json ~= "" then
-		-- 提取 tag_name
-		local tag = gh_json:match('"tag_name"%s*:%s*"([^"]+)"')
-		if tag and tag ~= "" then
-			plugin_latest = tag:gsub("^v", ""):gsub("%s+", "")
+	local sources = {
+		{ api = GITHUB_API_RELEASES_URL, releases = GITHUB_RELEASES_URL },
+		{ api = GITEA_API_RELEASES_URL, releases = GITEA_RELEASES_URL },
+	}
+
+	for _, source in ipairs(sources) do
+		local tag, body = fetch_release_metadata_from_api(sys, source.api)
+		if plugin_latest == "" and tag ~= "" then
+			plugin_latest = tag
 		end
-		-- 提取 body (release notes), 处理 JSON 转义
-		-- 结束引号后可能紧跟 \n、空格、, 或 }，用宽松匹配
-		local body = gh_json:match('"body"%s*:%s*"(.-)"[,}%]\n ]')
-		if body and body ~= "" then
-			-- 还原 JSON 转义: \n \r \" \\
-			body = body:gsub("\\n", "\n"):gsub("\\r", ""):gsub('\\"', '"'):gsub("\\\\", "\\")
+		if release_notes == "" and body ~= "" then
 			release_notes = body
+		end
+
+		if plugin_latest == "" then
+			tag = fetch_release_tag_from_redirect(sys, source.releases)
+			if tag ~= "" then
+				plugin_latest = tag
+			end
+		end
+
+		if plugin_latest ~= "" and release_notes ~= "" then
+			break
 		end
 	end
 
