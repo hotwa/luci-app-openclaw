@@ -107,7 +107,7 @@ cat > "$CTRL_DIR/control" << EOF
 Package: ${PKG_NAME}
 Version: ${PKG_VERSION}-${PKG_RELEASE}
 Depends: luci-compat, luci-base, curl, openssl-util, script-utils, tar, libstdcpp
-Source: https://github.com/hotwa/luci-app-openclaw
+Source: https://github.com/10000ge10000/luci-app-openclaw
 SourceName: ${PKG_NAME}
 License: GPL-3.0
 Section: luci
