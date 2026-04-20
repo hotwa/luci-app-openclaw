@@ -1,0 +1,26 @@
+name: Auto-Clean
+
+on:
+  schedule:
+    - cron: "0 21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  auto_clean:
+    runs-on: ubuntu-22.04
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITEA_API_BASE: ${{ vars.GITEA_API_BASE }}
+      GITEA_REPO: ${{ vars.GITEA_REPO }}
+      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+      KEEP_APP_RELEASES: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Delete old releases and workflow runs
+        run: python3 scripts/cleanup_release_history.py

@@ -4,18 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       build_v1:
-        description: 'Build V1 (22.15.1) - Legacy compatibility'
+        description: 'Build V1 - Legacy compatibility'
         required: false
         default: true
         type: boolean
       build_v2:
-        description: 'Build V2 (24.14.1) - Current LTS version'
+        description: 'Build V2 - Current 24.x LTS version'
         required: false
         default: true
         type: boolean
 
 jobs:
-  # ── V1 构建: 使用 Alpine apk 模式 (22.15.1) ──
+  # ── V1 构建: 使用 Alpine apk 模式 (legacy 22.x) ──
   build-v1:
     name: Build Node.js V1 (Legacy)
     if: ${{ inputs.build_v1 }}
@@ -29,6 +29,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Read Node.js V1 version from source
+        run: |
+          NODE_VER=$(grep -oP 'NODE_VERSION_V1="\K[0-9.]+' root/usr/bin/openclaw-env)
+          echo "NODE_VER=${NODE_VER}" >> "$GITHUB_ENV"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -36,7 +41,6 @@ jobs:
 
       - name: Build Node.js V1 ARM64 musl (apk lts mode)
         run: |
-          NODE_VER="22.15.1"
           mkdir -p dist
           echo "=== Building Node.js v${NODE_VER} ARM64 musl (apk lts mode) ==="
           docker run --rm --platform linux/arm64 \
@@ -50,7 +54,10 @@ jobs:
       - name: Build info
         id: build_info
         run: |
+          EXPECTED_ARTIFACT="node-v${NODE_VER}-linux-arm64-musl.tar.xz"
+          test -f "dist/${EXPECTED_ARTIFACT}"
           ARTIFACT_NAME=$(ls dist/*.tar.xz | head -1 | xargs basename)
+          test "${ARTIFACT_NAME}" = "${EXPECTED_ARTIFACT}"
           echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
           echo "Artifact: ${ARTIFACT_NAME}"
 
@@ -89,7 +96,7 @@ jobs:
           name: node-arm64-musl-v1
           path: dist/*.tar.xz
 
-  # ── V2 构建: 使用 Alpine edge apk 模式 (24.14.1 LTS) ──
+  # ── V2 构建: 使用 Alpine edge apk 模式 (current 24.x LTS) ──
   build-v2:
     name: Build Node.js V2 (Current)
     if: ${{ inputs.build_v2 }}
@@ -103,6 +110,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Read Node.js V2 version from source
+        run: |
+          NODE_VER=$(grep -oP 'NODE_VERSION_V2="\K[0-9.]+' root/usr/bin/openclaw-env)
+          echo "NODE_VER=${NODE_VER}" >> "$GITHUB_ENV"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -110,7 +122,6 @@ jobs:
 
       - name: Build Node.js V2 ARM64 musl (apk lts mode)
         run: |
-          NODE_VER="24.14.1"
           mkdir -p dist
           echo "=== Building Node.js v${NODE_VER} ARM64 musl (apk lts mode) ==="
           docker run --rm --platform linux/arm64 \
@@ -124,7 +135,7 @@ jobs:
       - name: Build info
         id: build_info
         run: |
-          EXPECTED_ARTIFACT="node-v24.14.1-linux-arm64-musl.tar.xz"
+          EXPECTED_ARTIFACT="node-v${NODE_VER}-linux-arm64-musl.tar.xz"
           test -f "dist/${EXPECTED_ARTIFACT}"
           ARTIFACT_NAME=$(ls dist/*.tar.xz | head -1 | xargs basename)
           test "${ARTIFACT_NAME}" = "${EXPECTED_ARTIFACT}"
@@ -174,8 +185,20 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read Node.js versions from source
+        run: |
+          NODE_VERSION_V1=$(grep -oP 'NODE_VERSION_V1="\K[0-9.]+' root/usr/bin/openclaw-env)
+          NODE_VERSION_V2=$(grep -oP 'NODE_VERSION_V2="\K[0-9.]+' root/usr/bin/openclaw-env)
+          echo "NODE_VERSION_V1=${NODE_VERSION_V1}" >> "$GITHUB_ENV"
+          echo "NODE_VERSION_V2=${NODE_VERSION_V2}" >> "$GITHUB_ENV"
+
       - name: Download V1 artifact
         if: ${{ needs.build-v1.result == 'success' }}
         uses: actions/download-artifact@v4
@@ -195,6 +218,39 @@ jobs:
           echo "=== All artifacts ==="
           ls -lh dist/
 
+      - name: Generate release body
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          from textwrap import dedent
+
+          v1 = os.environ["NODE_VERSION_V1"]
+          v2 = os.environ["NODE_VERSION_V2"]
+          body = dedent(f"""\
+          预编译的 Node.js ARM64 musl 二进制文件，供 ARM64 OpenWrt/iStoreOS 设备使用。
+
+          Node.js 官方 [unofficial-builds](https://unofficial-builds.nodejs.org/) 仅提供 x64 musl 构建，不提供 ARM64 musl。
+          此 Release 使用 Alpine Linux ARM64 (musl libc) 环境打包。
+
+          ## 版本说明
+
+          | 文件 | 版本 | 用途 |
+          |------|------|------|
+          | `node-v{v2}-linux-arm64-musl.tar.xz` | V2 (当前默认) | OpenClaw v2026.3.11+ (默认下载，满足 >= 22.16.0) |
+          | `node-v{v1}-linux-arm64-musl.tar.xz` | V1 (旧版) | OpenClaw v2026.3.8 及更早版本 |
+
+          ## 构建模式
+
+          两种版本均使用 **Alpine apk 模式** 构建:
+          - **V2**: 使用 Alpine `edge` 的 `nodejs` LTS 包 (v{v2})
+          - **V1**: 使用 Alpine `nodejs` LTS 包 (v{v1})
+
+          `openclaw-env setup` 会在 ARM64 musl 设备上默认直连下载 V2 当前版本，必要时再回退到 Release 元数据解析。
+          """).strip() + "\n"
+          Path("release-body.md").write_text(body, encoding="utf-8")
+          PY
+
       - name: Create/Update Release
         uses: softprops/action-gh-release@v2
         with:
@@ -204,23 +260,5 @@ jobs:
           draft: false
           prerelease: false
           make_latest: false
-          body: |
-            预编译的 Node.js ARM64 musl 二进制文件，供 ARM64 OpenWrt/iStoreOS 设备使用。
-
-            Node.js 官方 [unofficial-builds](https://unofficial-builds.nodejs.org/) 仅提供 x64 musl 构建，不提供 ARM64 musl。
-            此 Release 使用 Alpine Linux ARM64 (musl libc) 环境打包。
-
-            ## 版本说明
-
-            | 文件 | 版本 | 用途 |
-            |------|------|------|
-            | `node-v24.14.1-linux-arm64-musl.tar.xz` | V2 (当前默认) | OpenClaw v2026.3.11+ (默认下载，满足 >= 22.16.0) |
-            | `node-v22.x.x-linux-arm64-musl.tar.xz` | V1 (旧版) | OpenClaw v2026.3.8 及更早版本 |
-
-            ## 构建模式
-
-            两种版本均使用 **Alpine apk 模式** 构建:
-            - **V2**: 使用 Alpine `edge` 的 `nodejs` LTS 包 (v24.x)，当前默认发布 `node-v24.14.1-linux-arm64-musl.tar.xz`
-            - **V1**: 使用 Alpine `nodejs` LTS 包 (v22.x)，兼容旧版 OpenClaw
-
-            `openclaw-env setup` 会在 ARM64 musl 设备上默认直连下载 V2 当前版本，必要时再回退到 Release 元数据解析。
+          overwrite_files: true
+          body_path: release-body.md

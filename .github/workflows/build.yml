@@ -4,10 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  schedule:
+    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号 (留空则读取 VERSION 文件)'
+        description: '版本号 (留空则读取 VERSION 文件；定时运行会自动跟随 openclaw/openclaw 最新 release)'
         required: false
         type: string
         default: ''
@@ -29,9 +31,11 @@ jobs:
     permissions:
       contents: write
     env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
       GITEA_API_BASE: ${{ vars.GITEA_API_BASE }}
       GITEA_REPO: ${{ vars.GITEA_REPO }}
+      OPENCLAW_UPSTREAM_REPO: openclaw/openclaw
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,16 +46,32 @@ jobs:
           INPUT_VER="${{ github.event.inputs.version }}"
           if [ -n "$INPUT_VER" ]; then
             VER="$INPUT_VER"
+            SOURCE="workflow input"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             VER="${GITHUB_REF_NAME#v}"
+            SOURCE="git tag"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            VER="$(sh scripts/get_upstream_openclaw_version.sh "$OPENCLAW_UPSTREAM_REPO")"
+            SOURCE="upstream ${OPENCLAW_UPSTREAM_REPO} latest release"
           elif [ -f VERSION ]; then
             VER="$(cat VERSION | tr -d '[:space:]')"
+            SOURCE="VERSION file"
           else
             VER="$(date -u +%Y.%m.%d)"
+            SOURCE="generated date"
           fi
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "tag=v$VER" >> "$GITHUB_OUTPUT"
-          echo "Version: $VER"
+          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+          echo "Version: $VER ($SOURCE)"
+
+      - name: Inject version
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          echo "$VER" > VERSION
+          # 同步到 Makefile
+          sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=$VER/" Makefile
+          sed -i "s/^OC_TESTED_VERSION=\"[^\"]*\"/OC_TESTED_VERSION=\"$VER\"/" root/usr/bin/openclaw-env
 
       - name: Extract build versions from source
         id: build_versions
@@ -64,13 +84,6 @@ jobs:
           echo "oc_version=${OC_VER}" >> "$GITHUB_OUTPUT"
           echo "Node.js: v${NODE_VER}"
           echo "OpenClaw: v${OC_VER}"
-
-      - name: Inject version
-        run: |
-          VER="${{ steps.version.outputs.version }}"
-          echo "$VER" > VERSION
-          # 同步到 Makefile
-          sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=$VER/" Makefile
 
       - name: Build .run installer (online)
         run: |
@@ -131,7 +144,7 @@ jobs:
           OPENLIST_PATH: ${{ secrets.OPENLIST_PATH }}
 
       - name: Create Release
-        if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+        if: github.ref_type == 'tag' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
@@ -142,9 +155,11 @@ jobs:
           draft: false
           prerelease: false
           body_path: .release/release-body.md
+          overwrite_files: true
+          make_latest: true
 
       - name: Gitea Release Sync (optional)
-        if: (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')) && env.GITEA_TOKEN != '' && env.GITEA_API_BASE != '' && env.GITEA_REPO != ''
+        if: (github.ref_type == 'tag' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')) && env.GITEA_TOKEN != '' && env.GITEA_API_BASE != '' && env.GITEA_REPO != ''
         continue-on-error: true
         run: |
           chmod +x scripts/sync_gitea_release.sh
