@@ -18,6 +18,7 @@ grep -Fq "fetch_release_tag_from_redirect" "$CONTROLLER" || fail "update check s
 grep -Fq "url_effective" "$CONTROLLER" || fail "update check should inspect the final redirect URL to recover the latest tag"
 grep -Fq "GITEA_API_RELEASES_URL" "$CONTROLLER" || fail "update check should define a Gitea API fallback"
 grep -Fq "GITEA_RELEASES_URL" "$CONTROLLER" || fail "update check should define a Gitea release-page fallback"
+grep -Fq "compare_plugin_versions(tag, plugin_latest) > 0" "$CONTROLLER" || fail "update check should keep the highest version discovered across fallback sources"
 
 if grep -Fq 'plugin_current ~= plugin_latest' "$CONTROLLER"; then
 	fail "update check should not treat any version mismatch as an upgrade"

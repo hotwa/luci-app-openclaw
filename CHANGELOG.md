@@ -4,6 +4,14 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [2.0.7] - 2026-04-20
+
+### 修复
+
+- **多源版本选择修正**: `action_check_update()` 不再采用“第一个非空版本”，改为在 GitHub API / GitHub Release 页面 / Gitea API / Gitea Release 页面中选择最高版本，避免单个源缓存滞后时把 `plugin_latest` 锁在较旧版本
+- **Release Notes 版本对齐**: 更新日志优先跟随最终选中的最高版本，减少 fallback 顺序导致的版本说明错位
+- **更新检查契约增强**: `tests/test_update_check_contract.sh` 新增“多源取最高版本”约束，防止后续回归
+
 ## [2.0.6] - 2026-04-20
 
 ### 修复

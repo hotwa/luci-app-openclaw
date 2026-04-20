@@ -561,6 +561,7 @@ function action_check_update()
 	local plugin_latest = ""
 	local release_notes = ""
 	local plugin_has_update = false
+	local release_notes_version = ""
 
 	local sources = {
 		{ api = GITHUB_API_RELEASES_URL, releases = GITHUB_RELEASES_URL },
@@ -569,22 +570,21 @@ function action_check_update()
 
 	for _, source in ipairs(sources) do
 		local tag, body = fetch_release_metadata_from_api(sys, source.api)
-		if plugin_latest == "" and tag ~= "" then
+		if tag ~= "" and (plugin_latest == "" or compare_plugin_versions(tag, plugin_latest) > 0) then
 			plugin_latest = tag
+			release_notes = body or ""
+			release_notes_version = body ~= "" and tag or ""
 		end
-		if release_notes == "" and body ~= "" then
+		if tag ~= "" and body ~= "" and tag == plugin_latest and release_notes_version ~= tag then
 			release_notes = body
+			release_notes_version = tag
 		end
 
-		if plugin_latest == "" then
-			tag = fetch_release_tag_from_redirect(sys, source.releases)
-			if tag ~= "" then
-				plugin_latest = tag
-			end
-		end
-
-		if plugin_latest ~= "" and release_notes ~= "" then
-			break
+		tag = fetch_release_tag_from_redirect(sys, source.releases)
+		if tag ~= "" and (plugin_latest == "" or compare_plugin_versions(tag, plugin_latest) > 0) then
+			plugin_latest = tag
+			release_notes = ""
+			release_notes_version = ""
 		end
 	end
 
