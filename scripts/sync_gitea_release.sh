@@ -12,9 +12,8 @@ if [ -z "$VER" ] || [ -z "$TAG" ] || [ -z "$ASSET_DIR" ] || [ -z "$BODY_FILE" ];
 fi
 
 : "${GITEA_TOKEN:?请设置 GITEA_TOKEN}"
-
-GITEA_API_BASE="${GITEA_API_BASE:-https://gitea.jmsu.top/api/v1}"
-GITEA_REPO="${GITEA_REPO:-lingyuzeng/luci-app-openclaw}"
+: "${GITEA_API_BASE:?请设置 GITEA_API_BASE}"
+: "${GITEA_REPO:?请设置 GITEA_REPO}"
 
 OWNER="${GITEA_REPO%%/*}"
 REPO="${GITEA_REPO#*/}"

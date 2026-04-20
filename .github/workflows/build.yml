@@ -30,6 +30,8 @@ jobs:
       contents: write
     env:
       GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+      GITEA_API_BASE: ${{ vars.GITEA_API_BASE }}
+      GITEA_REPO: ${{ vars.GITEA_REPO }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -142,11 +144,8 @@ jobs:
           body_path: .release/release-body.md
 
       - name: Gitea Release Sync (optional)
-        if: (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')) && env.GITEA_TOKEN != ''
+        if: (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')) && env.GITEA_TOKEN != '' && env.GITEA_API_BASE != '' && env.GITEA_REPO != ''
         continue-on-error: true
-        env:
-          GITEA_API_BASE: https://gitea.jmsu.top/api/v1
-          GITEA_REPO: lingyuzeng/luci-app-openclaw
         run: |
           chmod +x scripts/sync_gitea_release.sh
           bash scripts/sync_gitea_release.sh \

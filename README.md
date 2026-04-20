@@ -9,6 +9,16 @@
 
 在路由器上运行 OpenClaw，通过 LuCI 管理界面完成安装、配置和服务管理。
 
+**GitHub Actions 配置**
+
+如果你只想让 `main` 分支走自用发布和 Gitea 同步，请在仓库里配置这些值：
+
+- 仓库变量 `GITEA_API_BASE`
+- 仓库变量 `GITEA_REPO`
+- 仓库密钥 `GITEA_TOKEN`
+
+纯上游对齐分支 `codex/pure-upstream-align-20260421` 不需要这些值。`GITEA_API_BASE` 和 `GITEA_REPO` 放在 Variables 里即可，`GITEA_TOKEN` 放在 Secrets 里更合适。
+
 <div align="center">
   <img src="docs/images/2.png" alt="OpenClaw LuCI 管理界面" width="800" style="border-radius:8px;" />
 </div>
