@@ -6,6 +6,31 @@ local GITHUB_RELEASES_URL = "https://github.com/" .. GITHUB_REPO .. "/releases"
 local GITHUB_API_RELEASES_URL = "https://api.github.com/repos/" .. GITHUB_REPO .. "/releases"
 local jsonc = require "luci.jsonc"
 
+local function compare_plugin_versions(lhs, rhs)
+	local function parse(version)
+		local parts = {}
+		version = tostring(version or ""):gsub("^v", "")
+		for n in version:gmatch("%d+") do
+			parts[#parts + 1] = tonumber(n) or 0
+		end
+		return parts
+	end
+
+	local left = parse(lhs)
+	local right = parse(rhs)
+	local total = math.max(#left, #right)
+
+	for i = 1, total do
+		local a = left[i] or 0
+		local b = right[i] or 0
+		if a ~= b then
+			return a - b
+		end
+	end
+
+	return 0
+end
+
 function index()
 	-- 主入口: 服务 → OpenClaw (🧠 作为菜单图标)
 	local page = entry({"admin", "services", "openclaw"}, alias("admin", "services", "openclaw", "basic"), _("OpenClaw"), 90)
@@ -504,8 +529,8 @@ function action_check_update()
 		end
 	end
 
-	if plugin_current ~= "" and plugin_latest ~= "" and plugin_current ~= plugin_latest then
-		plugin_has_update = true
+	if plugin_current ~= "" and plugin_latest ~= "" then
+		plugin_has_update = compare_plugin_versions(plugin_latest, plugin_current) > 0
 	end
 
 	http.prepare_content("application/json")

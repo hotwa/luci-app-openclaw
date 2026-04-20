@@ -4,6 +4,17 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [2.0.5] - 2026-04-20
+
+### 修复
+
+- **插件升级误报修复**: `action_check_update()` 改为数字版本比较，避免本地已是 `2.0.2+` 时仍把 GitHub 上较旧的 `2.0.1` 误判为“有新版本”
+- **更新检查契约测试**: 新增 `tests/test_update_check_contract.sh`，锁定“只有远端版本更高时才提示升级”的行为，防止后续回归
+
+### 发布
+
+- **版本元数据提升**: 仓库当前发布版本号提升到 `2.0.5`，为后续 GitHub/Gitea release 同步提供统一版本基线
+
 ## [2.0.4] - 2026-04-10
 
 ### 适配 OpenClaw v2026.4.9
