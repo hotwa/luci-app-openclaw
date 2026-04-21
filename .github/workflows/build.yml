@@ -8,6 +8,11 @@ on:
     - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
+      use_upstream_latest:
+        description: '手动测试时使用 openclaw/openclaw 最新 release'
+        required: false
+        type: boolean
+        default: false
       version:
         description: '版本号 (留空则读取 VERSION 文件；定时运行会自动跟随 openclaw/openclaw 最新 release)'
         required: false
@@ -30,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
@@ -44,13 +50,14 @@ jobs:
         id: version
         run: |
           INPUT_VER="${{ github.event.inputs.version }}"
+          USE_UPSTREAM_LATEST="${{ github.event.inputs.use_upstream_latest }}"
           if [ -n "$INPUT_VER" ]; then
             VER="$INPUT_VER"
             SOURCE="workflow input"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             VER="${GITHUB_REF_NAME#v}"
             SOURCE="git tag"
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
+          elif [ "${{ github.event_name }}" = "schedule" ] || [ "$USE_UPSTREAM_LATEST" = "true" ]; then
             VER="$(sh scripts/get_upstream_openclaw_version.sh "$OPENCLAW_UPSTREAM_REPO")"
             SOURCE="upstream ${OPENCLAW_UPSTREAM_REPO} latest release"
           elif [ -f VERSION ]; then
@@ -168,3 +175,8 @@ jobs:
             "${{ steps.version.outputs.tag }}" \
             dist \
             .release/release-body.md
+
+      - name: Clean old releases and runs
+        if: github.ref_type == 'tag' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+        run: |
+          python3 scripts/cleanup_release_history.py
