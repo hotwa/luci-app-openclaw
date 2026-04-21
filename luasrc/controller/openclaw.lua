@@ -3,10 +3,14 @@ module("luci.controller.openclaw", package.seeall)
 
 local nixio_fs = require "nixio.fs"
 local util = require "luci.util"
+local jsonc = require "luci.jsonc"
 local oc_paths = require "openclaw.paths"
 local GITHUB_REPO = "10000ge10000/luci-app-openclaw"
 local GITHUB_RELEASES_URL = "https://github.com/" .. GITHUB_REPO .. "/releases"
 local GITHUB_API_RELEASES_URL = "https://api.github.com/repos/" .. GITHUB_REPO .. "/releases"
+local GITEA_REPO = "lingyuzeng/luci-app-openclaw"
+local GITEA_RELEASES_URL = "https://gitea.jmsu.top/" .. GITEA_REPO .. "/releases"
+local GITEA_API_RELEASES_URL = "https://gitea.jmsu.top/api/v1/repos/" .. GITEA_REPO .. "/releases"
 
 local function get_install_root_from_uci()
 	return require("luci.model.uci").cursor():get("openclaw", "main", "install_root")
@@ -84,6 +88,178 @@ local function runtime_installed(paths)
 	return file_exists(get_node_bin(paths)) and oc_entry ~= ""
 end
 
+local function get_gateway_state()
+	local sys = require "luci.sys"
+	local raw = sys.exec([[ubus call service list '{"name":"openclaw"}' 2>/dev/null]])
+	if not raw or raw == "" then
+		return nil
+	end
+
+	local data = jsonc.parse(raw)
+	local gateway = data and data.openclaw and data.openclaw.instances and data.openclaw.instances.gateway
+	if not gateway then
+		return nil
+	end
+
+	return {
+		running = gateway.running == true,
+		pid = tostring(gateway.pid or ""),
+		exit_code = tonumber(gateway.exit_code),
+	}
+end
+
+local WECHAT_HELPER = "/usr/libexec/openclaw-wechat.sh"
+local WECHAT_INSTALL_LOG = "/tmp/openclaw-wechat-install.log"
+local WECHAT_INSTALL_PID = "/tmp/openclaw-wechat-install.pid"
+local WECHAT_INSTALL_EXIT = "/tmp/openclaw-wechat-install.exit"
+local WECHAT_LOGIN_QR = "/tmp/openclaw-wechat-qrcode.txt"
+local WECHAT_LOGIN_PID = "/tmp/openclaw-wechat-login.pid"
+local WECHAT_LOGIN_EXIT = "/tmp/openclaw-wechat-login.exit"
+local WECHAT_RESTARTED = "/tmp/openclaw-wechat-restarted"
+local WECHAT_STATE_FILE = "/tmp/openclaw-wechat.state"
+
+local function read_text_file(path)
+	local f = io.open(path, "r")
+	if not f then
+		return ""
+	end
+
+	local content = f:read("*a") or ""
+	f:close()
+	return content
+end
+
+local function read_kv_file(path)
+	local values = {}
+
+	for line in read_text_file(path):gmatch("[^\r\n]+") do
+		local key, value = line:match("^([%w_]+)=(.*)$")
+		if key then
+			values[key] = value
+		end
+	end
+
+	return values
+end
+
+local function pid_is_running(pid)
+	if not pid or pid == "" then
+		return false
+	end
+
+	local sys = require "luci.sys"
+	local status = sys.exec("kill -0 " .. pid .. " 2>/dev/null && echo yes || echo no"):gsub("%s+", "")
+	return status == "yes"
+end
+
+local function get_wechat_paths(paths)
+	local root = paths.oc_data .. "/.openclaw"
+
+	return {
+		plugin_dir = root .. "/extensions/openclaw-weixin",
+		plugin_json = root .. "/extensions/openclaw-weixin/openclaw.plugin.json",
+		package_json = root .. "/extensions/openclaw-weixin/package.json",
+		accounts_json = root .. "/openclaw-weixin/accounts.json",
+		config_json = root .. "/openclaw.json",
+	}
+end
+
+local function wechat_helper_command(action, extra_args)
+	local command = string.format("start-stop-daemon -S -c openclaw -x %s -- %s", shell_quote(WECHAT_HELPER), action)
+
+	if extra_args and extra_args ~= "" then
+		command = command .. " " .. extra_args
+	end
+
+	return command
+end
+
+local function wechat_spawn(action, pidfile, extra_args)
+	local sys = require "luci.sys"
+	local command = string.format("( %s ) >/dev/null 2>&1 & echo $! > %s", wechat_helper_command(action, extra_args), shell_quote(pidfile))
+	sys.exec(command)
+end
+
+local function wechat_run(action, extra_args)
+	local sys = require "luci.sys"
+	return sys.exec(wechat_helper_command(action, extra_args))
+end
+
+local function compare_plugin_versions(lhs, rhs)
+	local function split(version)
+		local parts = {}
+		local cleaned = trim(version):gsub("^v", "")
+
+		for part in cleaned:gmatch("%d+") do
+			parts[#parts + 1] = tonumber(part) or 0
+		end
+
+		return parts
+	end
+
+	local left = split(lhs)
+	local right = split(rhs)
+	local max_len = math.max(#left, #right, 3)
+
+	for i = 1, max_len do
+		local l = left[i] or 0
+		local r = right[i] or 0
+		if l ~= r then
+			return l - r
+		end
+	end
+
+	return 0
+end
+
+local function normalize_release_tag(tag)
+	tag = tostring(tag or ""):gsub("^v", ""):gsub("%s+", "")
+	return tag
+end
+
+local function decode_release_body(body)
+	body = tostring(body or "")
+	if body == "" then
+		return ""
+	end
+
+	return body:gsub("\\n", "\n"):gsub("\\r", ""):gsub('\\"', '"'):gsub("\\\\", "\\")
+end
+
+local function fetch_release_metadata_from_api(sys, api_base)
+	local payload = sys.exec("curl -fsS --connect-timeout 5 --max-time 10 '" .. api_base .. "/latest' 2>/dev/null")
+	if not payload or payload == "" then
+		return "", ""
+	end
+
+	local data = jsonc.parse(payload)
+	if type(data) == "table" then
+		local tag = normalize_release_tag(data.tag_name)
+		local body = decode_release_body(data.body)
+		return tag, body
+	end
+
+	local tag = normalize_release_tag(payload:match('"tag_name"%s*:%s*"([^"]+)"'))
+	local body = decode_release_body(payload:match('"body"%s*:%s*"(.-)"[,}%]\n ]'))
+	return tag, body
+end
+
+local function fetch_release_tag_from_redirect(sys, releases_base)
+	local effective = sys.exec(
+		"curl -fsSL -o /dev/null -w '%{url_effective}' --connect-timeout 5 --max-time 10 '" ..
+		releases_base .. "/latest' 2>/dev/null"
+	)
+	effective = tostring(effective or ""):gsub("%s+", "")
+
+	if effective == "" then
+		return ""
+	end
+
+	local tag = effective:match("/releases/tag/([^/?#]+)$")
+		or effective:match("/releases/download/([^/?#]+)/")
+	return normalize_release_tag(tag)
+end
+
 function index()
 	-- 主入口: 服务 → OpenClaw (🧠 作为菜单图标)
 	local page = entry({"admin", "services", "openclaw"}, alias("admin", "services", "openclaw", "basic"), _("OpenClaw"), 90)
@@ -127,6 +303,17 @@ function index()
 
 	-- 系统配置检测 API (安装前检测)
 	entry({"admin", "services", "openclaw", "check_system"}, call("action_check_system"), nil).leaf = true
+
+	-- 微信渠道 API
+	entry({"admin", "services", "openclaw", "wechat_status"}, call("action_wechat_status"), nil).leaf = true
+	entry({"admin", "services", "openclaw", "wechat_install"}, post("action_wechat_install"), nil).leaf = true
+	entry({"admin", "services", "openclaw", "wechat_install_log"}, call("action_wechat_install_log"), nil).leaf = true
+	entry({"admin", "services", "openclaw", "wechat_login"}, post("action_wechat_login"), nil).leaf = true
+	entry({"admin", "services", "openclaw", "wechat_login_status"}, call("action_wechat_login_status"), nil).leaf = true
+	entry({"admin", "services", "openclaw", "wechat_check_upgrade"}, call("action_wechat_check_upgrade"), nil).leaf = true
+	entry({"admin", "services", "openclaw", "wechat_upgrade_plugin"}, post("action_wechat_upgrade_plugin"), nil).leaf = true
+	entry({"admin", "services", "openclaw", "wechat_logout"}, post("action_wechat_logout"), nil).leaf = true
+	entry({"admin", "services", "openclaw", "wechat_uninstall"}, post("action_wechat_uninstall"), nil).leaf = true
 end
 
 -- ═══════════════════════════════════════════
@@ -152,6 +339,8 @@ function action_status()
 		pty_port = pty_port,
 		gateway_running = false,
 		gateway_starting = false,
+		gateway_failed = false,
+		gateway_exit_code = "",
 		pty_running = false,
 		pid = "",
 		memory_kb = 0,
@@ -205,11 +394,25 @@ function action_status()
 		local gw_check = sys.exec(gw_check_cmd):gsub("%s+", "")
 	result.gateway_running = (tonumber(gw_check) or 0) > 0
 
-	-- 如果端口未监听但 procd 进程存在，说明正在启动中 (gateway 初始化需要数分钟)
+	local gateway_state = get_gateway_state()
+	if gateway_state and gateway_state.pid ~= "" then
+		result.pid = gateway_state.pid
+	end
+	if gateway_state and gateway_state.exit_code ~= nil then
+		result.gateway_exit_code = tostring(gateway_state.exit_code)
+	end
+
+	-- 如果端口未监听但 procd 状态存在，说明正在启动或已失败
 	if not result.gateway_running and enabled == "1" then
-		local procd_pid = sys.exec("pgrep -f 'openclaw.*gateway' 2>/dev/null | head -1"):gsub("%s+", "")
-		if procd_pid ~= "" then
+		if gateway_state and gateway_state.running then
 			result.gateway_starting = true
+		elseif gateway_state and gateway_state.exit_code ~= nil and gateway_state.exit_code ~= 0 then
+			result.gateway_failed = true
+		else
+			local procd_pid = sys.exec("pgrep -f 'openclaw.*gateway' 2>/dev/null | head -1"):gsub("%s+", "")
+			if procd_pid ~= "" then
+				result.gateway_starting = true
+			end
 		end
 	end
 
@@ -450,26 +653,37 @@ function action_check_update()
 	local release_notes = ""
 	local plugin_has_update = false
 
-	-- 使用 GitHub API 获取最新 release (tag + body)
-	local gh_json = sys.exec("curl -sf --connect-timeout 5 --max-time 10 '" .. GITHUB_API_RELEASES_URL .. "/latest' 2>/dev/null")
-	if gh_json and gh_json ~= "" then
-		-- 提取 tag_name
-		local tag = gh_json:match('"tag_name"%s*:%s*"([^"]+)"')
-		if tag and tag ~= "" then
-			plugin_latest = tag:gsub("^v", ""):gsub("%s+", "")
+	local sources = {
+		{ api = GITHUB_API_RELEASES_URL, releases = GITHUB_RELEASES_URL },
+		{ api = GITEA_API_RELEASES_URL, releases = GITEA_RELEASES_URL },
+	}
+
+	for _, source in ipairs(sources) do
+		local tag, body = fetch_release_metadata_from_api(sys, source.api)
+		if plugin_latest == "" and tag ~= "" then
+			plugin_latest = tag
+		elseif tag ~= "" and compare_plugin_versions(tag, plugin_latest) > 0 then
+			plugin_latest = tag
 		end
-		-- 提取 body (release notes), 处理 JSON 转义
-		-- 结束引号后可能紧跟 \n、空格、, 或 }，用宽松匹配
-		local body = gh_json:match('"body"%s*:%s*"(.-)"[,}%]\n ]')
-		if body and body ~= "" then
-			-- 还原 JSON 转义: \n \r \" \\
-			body = body:gsub("\\n", "\n"):gsub("\\r", ""):gsub('\\"', '"'):gsub("\\\\", "\\")
+
+		if body and body ~= "" and release_notes == "" then
 			release_notes = body
+		end
+
+		if plugin_latest == "" then
+			tag = fetch_release_tag_from_redirect(sys, source.releases)
+			if tag ~= "" and (plugin_latest == "" or compare_plugin_versions(tag, plugin_latest) > 0) then
+				plugin_latest = tag
+			end
+		end
+
+		if plugin_latest ~= "" and release_notes ~= "" then
+			break
 		end
 	end
 
-	if plugin_current ~= "" and plugin_latest ~= "" and plugin_current ~= plugin_latest then
-		plugin_has_update = true
+	if plugin_current ~= "" and plugin_latest ~= "" then
+		plugin_has_update = compare_plugin_versions(plugin_latest, plugin_current) > 0
 	end
 
 	http.prepare_content("application/json")
@@ -1003,4 +1217,364 @@ function action_check_system()
 
 	http.prepare_content("application/json")
 	http.write_json(result)
+end
+
+function action_wechat_status()
+	local http = require "luci.http"
+	local paths = get_runtime_paths()
+	local wechat_paths = get_wechat_paths(paths)
+	local result = {
+		plugin_installed = false,
+		plugin_version = "",
+		logged_in = false,
+		accounts = {},
+		install_path = paths.install_root,
+		oc_root = paths.oc_root,
+	}
+
+	if file_exists(wechat_paths.plugin_json) then
+		result.plugin_installed = true
+		if file_exists(wechat_paths.package_json) then
+			local pf = io.open(wechat_paths.package_json, "r")
+			if pf then
+				local content = pf:read("*a") or ""
+				pf:close()
+				result.plugin_version = content:match('"version"%s*:%s*"([^"]+)"') or ""
+			end
+		end
+	end
+
+	local accounts_text = read_text_file(wechat_paths.accounts_json)
+	if accounts_text ~= "" then
+		for acc in accounts_text:gmatch('"([^"]+)"') do
+			table.insert(result.accounts, { name = acc })
+		end
+		if #result.accounts > 0 then
+			result.logged_in = true
+		end
+	end
+
+	local config_text = read_text_file(wechat_paths.config_json)
+	if config_text ~= "" and config_text:match('"openclaw%-weixin"%s*:%s*{') then
+		local accounts_str = config_text:match('"accounts"%s*:%s*%[([^%]]*)%]')
+		if accounts_str and accounts_str ~= "" then
+			local count = 0
+			for _ in accounts_str:gmatch('"wxid') do
+				count = count + 1
+			end
+			for _ in accounts_str:gmatch('"nickName"') do
+				count = count + 1
+			end
+			if count > 0 and not result.logged_in then
+				result.logged_in = true
+				result.accounts = { { name = "微信账号" } }
+			end
+		end
+
+		if config_text:match('"credential"%s*:%s*{') and not result.logged_in then
+			result.logged_in = true
+			result.accounts = { { name = "微信账号" } }
+		end
+	end
+
+	http.prepare_content("application/json")
+	http.write_json(result)
+end
+
+function action_wechat_install()
+	local http = require "luci.http"
+	local sys = require "luci.sys"
+	local paths = get_runtime_paths()
+
+	if not runtime_installed(paths) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "OpenClaw 运行环境未安装，请先在基本设置中安装运行环境" })
+		return
+	end
+
+	if not file_exists(WECHAT_HELPER) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "微信 helper 未安装" })
+		return
+	end
+
+	sys.exec("rm -f " .. shell_quote(WECHAT_INSTALL_LOG) .. " " .. shell_quote(WECHAT_INSTALL_PID) .. " " .. shell_quote(WECHAT_INSTALL_EXIT) .. " " .. shell_quote(WECHAT_STATE_FILE))
+	wechat_spawn("install", WECHAT_INSTALL_PID)
+
+	http.prepare_content("application/json")
+	http.write_json({ status = "ok", message = "微信插件安装已在后台启动..." })
+end
+
+function action_wechat_install_log()
+	local http = require "luci.http"
+
+	local log = read_text_file(WECHAT_INSTALL_LOG)
+	local state_file = read_kv_file(WECHAT_STATE_FILE)
+	local running = false
+	local pid = trim(state_file.pid or read_text_file(WECHAT_INSTALL_PID))
+	local exit_code = -1
+
+	if state_file.status == "running" then
+		running = pid ~= "" and pid_is_running(pid)
+	elseif state_file.status == "finished" then
+		local exit_text = trim(state_file.exit_code or read_text_file(WECHAT_INSTALL_EXIT))
+		if exit_text ~= "" then
+			exit_code = tonumber(exit_text) or -1
+		end
+	else
+		if pid ~= "" then
+			running = pid_is_running(pid)
+		end
+
+		if not running then
+			local exit_text = trim(read_text_file(WECHAT_INSTALL_EXIT))
+			if exit_text ~= "" then
+				exit_code = tonumber(exit_text) or -1
+			end
+		end
+	end
+
+	if state_file.status == "finished" and exit_code == -1 then
+		local exit_text = trim(state_file.exit_code or "")
+		if exit_text ~= "" then
+			exit_code = tonumber(exit_text) or -1
+		end
+	end
+
+	local state = "idle"
+	if state_file.status == "finished" then
+		if exit_code == 0 then
+			state = "success"
+		elseif exit_code > 0 then
+			state = "failed"
+		end
+	elseif running then
+		state = "running"
+	elseif exit_code == 0 then
+		state = "success"
+	elseif exit_code > 0 then
+		state = "failed"
+	end
+
+	http.prepare_content("application/json")
+	http.write_json({
+		status = "ok",
+		log = log,
+		running = running,
+		exit_code = exit_code,
+		state = state,
+	})
+end
+
+function action_wechat_login()
+	local http = require "luci.http"
+	local sys = require "luci.sys"
+	local paths = get_runtime_paths()
+
+	if not runtime_installed(paths) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "OpenClaw 运行环境未安装，请先在基本设置中安装运行环境" })
+		return
+	end
+
+	if not file_exists(WECHAT_HELPER) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "微信 helper 未安装" })
+		return
+	end
+
+	sys.exec("rm -f " .. shell_quote(WECHAT_LOGIN_QR) .. " " .. shell_quote(WECHAT_LOGIN_PID) .. " " .. shell_quote(WECHAT_LOGIN_EXIT) .. " " .. shell_quote(WECHAT_RESTARTED) .. " " .. shell_quote(WECHAT_STATE_FILE))
+	wechat_spawn("login", WECHAT_LOGIN_PID)
+
+	http.prepare_content("application/json")
+	http.write_json({ status = "ok", message = "微信登录流程已启动" })
+end
+
+function action_wechat_login_status()
+	local http = require "luci.http"
+	local sys = require "luci.sys"
+
+	local qrcode = read_text_file(WECHAT_LOGIN_QR)
+	local state_file = read_kv_file(WECHAT_STATE_FILE)
+	local pid = trim(state_file.pid or read_text_file(WECHAT_LOGIN_PID))
+	local running = false
+	local helper_finished = state_file.status == "finished"
+
+	if state_file.status == "running" then
+		running = pid ~= "" and pid_is_running(pid)
+	elseif not helper_finished and pid ~= "" then
+		running = pid_is_running(pid)
+	end
+
+	local exit_code = -1
+	if not running then
+		local exit_text = trim(state_file.exit_code or read_text_file(WECHAT_LOGIN_EXIT))
+		if exit_text ~= "" then
+			exit_code = tonumber(exit_text) or -1
+		end
+	end
+
+	local qrcode_url = ""
+	for url in qrcode:gmatch("https?://[^\n\r]+") do
+		qrcode_url = url
+	end
+
+	local logged_in = qrcode:find("登录成功") ~= nil
+		or qrcode:find("成功登录") ~= nil
+		or qrcode:find("Login success") ~= nil
+		or qrcode:find("Logged in") ~= nil
+
+	local state = "idle"
+	if helper_finished and exit_code == 0 then
+		state = "success"
+	elseif logged_in then
+		state = "success"
+	elseif running and qrcode_url ~= "" then
+		state = "qrcode"
+	elseif running then
+		state = "starting"
+	elseif exit_code == 0 then
+		state = "success"
+	elseif exit_code > 0 then
+		state = "failed"
+	end
+
+	if state == "success" and not nixio_fs.stat(WECHAT_RESTARTED, "type") then
+		sys.exec("touch " .. shell_quote(WECHAT_RESTARTED))
+		sys.exec("/etc/init.d/openclaw restart >/dev/null 2>&1 &")
+	end
+
+	http.prepare_content("application/json")
+	http.write_json({
+		status = "ok",
+		state = state,
+		qrcode = qrcode,
+		qrcode_url = qrcode_url,
+		running = running,
+		exit_code = exit_code,
+		logged_in = logged_in,
+	})
+end
+
+function action_wechat_check_upgrade()
+	local http = require "luci.http"
+	local sys = require "luci.sys"
+	local paths = get_runtime_paths()
+	local wechat_paths = get_wechat_paths(paths)
+
+	local current_version = ""
+	if file_exists(wechat_paths.package_json) then
+		local pf = io.open(wechat_paths.package_json, "r")
+		if pf then
+			local content = pf:read("*a") or ""
+			pf:close()
+			current_version = content:match('"version"%s*:%s*"([^"]+)"') or ""
+		end
+	end
+
+	local latest_version = ""
+	if runtime_installed(paths) and file_exists(get_node_bin(paths)) then
+		local npx_bin = paths.node_base .. "/bin/npx"
+		local env_prefix = string.format(
+			"HOME=%s PATH=%s:%s:$PATH",
+			shell_quote(paths.oc_data),
+			shell_quote(paths.node_base .. "/bin"),
+			shell_quote(paths.oc_global .. "/bin")
+		)
+		local check_cmd = string.format(
+			"%s %s view @tencent-weixin/openclaw-weixin version 2>/dev/null",
+			env_prefix,
+			shell_quote(npx_bin)
+		)
+		latest_version = sys.exec(check_cmd):gsub("%s+", "")
+	end
+
+	local has_upgrade = false
+	if current_version ~= "" and latest_version ~= "" and compare_plugin_versions(latest_version, current_version) > 0 then
+		has_upgrade = true
+	end
+
+	http.prepare_content("application/json")
+	http.write_json({
+		status = "ok",
+		current_version = current_version,
+		latest_version = latest_version,
+		has_upgrade = has_upgrade,
+	})
+end
+
+function action_wechat_upgrade_plugin()
+	local http = require "luci.http"
+	local sys = require "luci.sys"
+	local paths = get_runtime_paths()
+
+	if not runtime_installed(paths) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "OpenClaw 运行环境未安装，请先在基本设置中安装运行环境" })
+		return
+	end
+
+	if not file_exists(WECHAT_HELPER) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "微信 helper 未安装" })
+		return
+	end
+
+	sys.exec("rm -f " .. shell_quote(WECHAT_INSTALL_LOG) .. " " .. shell_quote(WECHAT_INSTALL_PID) .. " " .. shell_quote(WECHAT_INSTALL_EXIT) .. " " .. shell_quote(WECHAT_STATE_FILE))
+	wechat_spawn("upgrade", WECHAT_INSTALL_PID)
+
+	http.prepare_content("application/json")
+	http.write_json({ status = "ok", message = "微信插件升级已在后台启动..." })
+end
+
+function action_wechat_logout()
+	local http = require "luci.http"
+	local paths = get_runtime_paths()
+	local account_id = http.formvalue("account")
+
+	if not account_id or account_id == "" then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "参数错误：未提供账号 ID" })
+		return
+	end
+
+	if not runtime_installed(paths) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "OpenClaw 运行环境未安装，请先在基本设置中安装运行环境" })
+		return
+	end
+
+	if not file_exists(WECHAT_HELPER) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "微信 helper 未安装" })
+		return
+	end
+
+	wechat_run("logout", "--account " .. shell_quote(account_id))
+
+	http.prepare_content("application/json")
+	http.write_json({ status = "ok", message = "微信账号已退出" })
+end
+
+function action_wechat_uninstall()
+	local http = require "luci.http"
+	local paths = get_runtime_paths()
+	local wechat_paths = get_wechat_paths(paths)
+
+	if not file_exists(WECHAT_HELPER) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "微信 helper 未安装" })
+		return
+	end
+
+	wechat_run("uninstall")
+
+	if file_exists(wechat_paths.plugin_dir) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "微信插件卸载失败" })
+		return
+	end
+
+	http.prepare_content("application/json")
+	http.write_json({ status = "ok", message = "微信插件已卸载" })
 end
