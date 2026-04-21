@@ -205,12 +205,13 @@ enable_auth_plugins() {
 			const d=JSON.parse(fs.readFileSync('${CONFIG_FILE}','utf8'));
 			if(!d.plugins)d.plugins={};if(!d.plugins.entries)d.plugins.entries={};
 			const e=d.plugins.entries;
-			['qwen-portal-auth','copilot-proxy','google-gemini-cli-auth','minimax-portal-auth'].forEach(p=>{
+			['qwen-portal-auth','copilot-proxy','google-gemini-cli-auth'].forEach(p=>{
 				if(!e[p])e[p]={};e[p].enabled=true;
 			});
+			delete e['minimax-portal-auth'];
 			delete e['google-antigravity-auth'];
 			if(d.plugins && d.plugins.installs){
-				['openclaw-qqbot','@tencent-connect/openclaw-qqbot','openclaw-lark','@larksuite/openclaw-lark'].forEach(p=>{
+				['openclaw-qqbot','@tencent-connect/openclaw-qqbot','openclaw-lark','@larksuite/openclaw-lark','minimax-portal-auth'].forEach(p=>{
 					if(d.plugins.installs[p]){
 						delete d.plugins.installs[p];
 					}

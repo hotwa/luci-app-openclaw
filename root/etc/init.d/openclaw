@@ -12,6 +12,7 @@ EXTRA_HELP="    setup            下载 Node.js 并安装 OpenClaw
 
 . /usr/libexec/openclaw-paths.sh
 oc_load_paths "$OPENCLAW_INSTALL_ROOT"
+. /usr/libexec/openclaw-compat.sh
 
 # ── OverlayFS 兼容性修复 ──
 # Docker bind mount (/overlay/upper/opt/docker) 会导致 /opt 不可写
@@ -188,10 +189,12 @@ fi
 # 检查 openclaw 入口
 local oc_entry
 oc_entry=$(get_oc_entry)
-if [ -z "$oc_entry" ]; then
-echo "OpenClaw 未安装。请运行: openclaw-env setup"
-return 1
-fi
+	if [ -z "$oc_entry" ]; then
+		echo "OpenClaw 未安装。请运行: openclaw-env setup"
+		return 1
+	fi
+
+	oc_apply_runtime_compat || true
 
 	# 同步 UCI 到 JSON
 	sync_uci_to_json

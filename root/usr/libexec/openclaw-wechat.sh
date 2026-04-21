@@ -4,6 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 . "$SCRIPT_DIR/openclaw-paths.sh"
 oc_load_paths "$OPENCLAW_INSTALL_ROOT"
+. "$SCRIPT_DIR/openclaw-compat.sh"
 
 NODE_BIN="${NODE_BASE}/bin/node"
 NPX_BIN="${NODE_BASE}/bin/npx"
@@ -21,6 +22,10 @@ LOGIN_PID="/tmp/openclaw-wechat-login.pid"
 LOGIN_EXIT="/tmp/openclaw-wechat-login.exit"
 RESTART_MARK="/tmp/openclaw-wechat-restarted"
 STATE_FILE="/tmp/openclaw-wechat.state"
+
+wechat_prepare_runtime() {
+	oc_apply_runtime_compat || true
+}
 
 wechat_find_entry() {
 	local search_dirs d
@@ -109,6 +114,8 @@ wechat_install_like() {
 
 	mkdir -p "${OC_DATA}/.npm" "${OC_DATA}/.cache/corepack" "${OC_DATA}/tmp" 2>/dev/null || true
 
+	wechat_prepare_runtime
+
 	cd "$OC_ROOT"
 	rc=0
 	HOME="$OC_DATA" \
@@ -163,6 +170,8 @@ wechat_login() {
 		printf '安装路径: %s\n' "$OC_ROOT"
 	} > "$LOGIN_QR"
 
+	wechat_prepare_runtime
+
 	cd "$OC_ROOT"
 	rc=0
 	HOME="$OC_DATA" \
@@ -193,6 +202,8 @@ wechat_logout() {
 	if [ ! -x "$NODE_BIN" ]; then
 		return 127
 	fi
+
+	wechat_prepare_runtime
 
 	cd "$OC_ROOT"
 	rc=0

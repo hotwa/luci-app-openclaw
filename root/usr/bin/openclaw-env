@@ -13,6 +13,7 @@ set -e
 
 . /usr/libexec/openclaw-paths.sh
 . /usr/libexec/openclaw-node.sh
+. /usr/libexec/openclaw-compat.sh
 
 # ── Node.js 版本策略 ──
 # V2: 当前推荐版本，用于 OpenClaw v2026.3.11+ (默认下载 24.14.1，满足 >= 22.16.0)
@@ -523,6 +524,7 @@ do_setup() {
 		echo "  如需升级，请使用: openclaw-env upgrade"
 		echo "  如需重装，请先卸载: 在 LuCI 界面点击「卸载环境」"
 		echo ""
+		oc_apply_runtime_compat || true
 		exit 0
 	fi
 
@@ -544,6 +546,7 @@ do_setup() {
 	download_node "$node_ver"
 	install_pnpm
 	install_openclaw
+	oc_apply_runtime_compat || true
 	init_openclaw
 
 	echo ""
@@ -638,6 +641,7 @@ do_upgrade() {
 	echo ""
 	ensure_runtime_cache_dirs
 	"$NPM_BIN" install -g openclaw@latest --prefix="$OC_GLOBAL" $install_flags 2>&1
+	oc_apply_runtime_compat || true
 
 	# 验证升级结果
 	local new_ver=""
