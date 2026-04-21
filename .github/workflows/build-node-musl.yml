@@ -31,7 +31,7 @@ jobs:
 
       - name: Read Node.js V1 version from source
         run: |
-          NODE_VER=$(grep -oP 'NODE_VERSION_V1="\K[0-9.]+' root/usr/bin/openclaw-env)
+          NODE_VER=$(sh scripts/read_openclaw_env_value.sh NODE_VERSION_V1)
           echo "NODE_VER=${NODE_VER}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
@@ -112,7 +112,7 @@ jobs:
 
       - name: Read Node.js V2 version from source
         run: |
-          NODE_VER=$(grep -oP 'NODE_VERSION_V2="\K[0-9.]+' root/usr/bin/openclaw-env)
+          NODE_VER=$(sh scripts/read_openclaw_env_value.sh NODE_VERSION_V2)
           echo "NODE_VER=${NODE_VER}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
@@ -194,8 +194,8 @@ jobs:
 
       - name: Read Node.js versions from source
         run: |
-          NODE_VERSION_V1=$(grep -oP 'NODE_VERSION_V1="\K[0-9.]+' root/usr/bin/openclaw-env)
-          NODE_VERSION_V2=$(grep -oP 'NODE_VERSION_V2="\K[0-9.]+' root/usr/bin/openclaw-env)
+          NODE_VERSION_V1=$(sh scripts/read_openclaw_env_value.sh NODE_VERSION_V1)
+          NODE_VERSION_V2=$(sh scripts/read_openclaw_env_value.sh NODE_VERSION_V2)
           echo "NODE_VERSION_V1=${NODE_VERSION_V1}" >> "$GITHUB_ENV"
           echo "NODE_VERSION_V2=${NODE_VERSION_V2}" >> "$GITHUB_ENV"
 

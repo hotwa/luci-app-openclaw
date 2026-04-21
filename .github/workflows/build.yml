@@ -85,8 +85,8 @@ jobs:
         run: |
           # 从 openclaw-env 中提取版本号 (唯一的版本真相源)
           # NODE_VERSION_V2 是当前推荐的 Node.js 版本
-          NODE_VER=$(grep -oP 'NODE_VERSION_V2="\K[0-9.]+' root/usr/bin/openclaw-env)
-          OC_VER=$(grep -oP 'OC_TESTED_VERSION="\K[0-9.]+' root/usr/bin/openclaw-env)
+          NODE_VER=$(sh scripts/read_openclaw_env_value.sh NODE_VERSION_V2)
+          OC_VER=$(sh scripts/read_openclaw_env_value.sh OC_TESTED_VERSION)
           echo "node_version=${NODE_VER}" >> "$GITHUB_OUTPUT"
           echo "oc_version=${OC_VER}" >> "$GITHUB_OUTPUT"
           echo "Node.js: v${NODE_VER}"
