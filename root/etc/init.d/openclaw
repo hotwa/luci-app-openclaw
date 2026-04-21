@@ -497,6 +497,14 @@ status_service() {
 local port pty_port
 port=$(uci -q get openclaw.main.port || echo "18789")
 pty_port=$(uci -q get openclaw.main.pty_port || echo "18793")
+local gateway_state gateway_running gateway_exit_code
+gateway_state=$(ubus call service list '{"name":"openclaw"}' 2>/dev/null || true)
+gateway_running=""
+gateway_exit_code=""
+if [ -n "$gateway_state" ]; then
+	gateway_running=$(echo "$gateway_state" | jsonfilter -e '$.openclaw.instances.gateway.running' 2>/dev/null || true)
+	gateway_exit_code=$(echo "$gateway_state" | jsonfilter -e '$.openclaw.instances.gateway.exit_code' 2>/dev/null || true)
+fi
 
 echo "=== OpenClaw 服务状态 ==="
 
@@ -560,7 +568,9 @@ local mins=$(( (uptime % 3600) / 60 ))
 echo "运行时间: ${hours}小时 ${mins}分钟"
 fi
 fi
-elif pgrep -f "openclaw.*gateway" >/dev/null 2>&1; then
+elif [ -n "$gateway_exit_code" ] && [ "$gateway_exit_code" != "0" ] && [ "$gateway_exit_code" != "null" ]; then
+echo "网关:     启动失败 (退出码: ${gateway_exit_code})"
+elif [ "$gateway_running" = "true" ] || [ "$gateway_running" = "1" ]; then
 echo "网关:     正在启动 (首次启动可能需要 2~5 分钟)"
 else
 echo "网关:     已停止"

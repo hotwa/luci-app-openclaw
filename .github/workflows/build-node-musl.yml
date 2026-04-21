@@ -9,7 +9,7 @@ on:
         default: true
         type: boolean
       build_v2:
-        description: 'Build V2 - Current 24.x LTS version'
+        description: 'Build V2 (24.14.1) - Current LTS version'
         required: false
         default: true
         type: boolean
@@ -110,11 +110,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Read Node.js V2 version from source
-        run: |
-          NODE_VER=$(sh scripts/read_openclaw_env_value.sh NODE_VERSION_V2)
-          echo "NODE_VER=${NODE_VER}" >> "$GITHUB_ENV"
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
@@ -122,6 +117,7 @@ jobs:
 
       - name: Build Node.js V2 ARM64 musl (apk lts mode)
         run: |
+          NODE_VER="24.14.1"
           mkdir -p dist
           echo "=== Building Node.js v${NODE_VER} ARM64 musl (apk lts mode) ==="
           docker run --rm --platform linux/arm64 \
@@ -135,7 +131,7 @@ jobs:
       - name: Build info
         id: build_info
         run: |
-          EXPECTED_ARTIFACT="node-v${NODE_VER}-linux-arm64-musl.tar.xz"
+          EXPECTED_ARTIFACT="node-v24.14.1-linux-arm64-musl.tar.xz"
           test -f "dist/${EXPECTED_ARTIFACT}"
           ARTIFACT_NAME=$(ls dist/*.tar.xz | head -1 | xargs basename)
           test "${ARTIFACT_NAME}" = "${EXPECTED_ARTIFACT}"
@@ -237,13 +233,13 @@ jobs:
 
           | 文件 | 版本 | 用途 |
           |------|------|------|
-          | `node-v{v2}-linux-arm64-musl.tar.xz` | V2 (当前默认) | OpenClaw v2026.3.11+ (默认下载，满足 >= 22.16.0) |
+          | `node-v24.14.1-linux-arm64-musl.tar.xz` | V2 (当前默认) | OpenClaw v2026.3.11+ (默认下载，满足 >= 22.16.0) |
           | `node-v{v1}-linux-arm64-musl.tar.xz` | V1 (旧版) | OpenClaw v2026.3.8 及更早版本 |
 
           ## 构建模式
 
           两种版本均使用 **Alpine apk 模式** 构建:
-          - **V2**: 使用 Alpine `edge` 的 `nodejs` LTS 包 (v{v2})
+          - **V2**: 使用 Alpine `edge` 的 `nodejs` LTS 包 (v24.14.1)
           - **V1**: 使用 Alpine `nodejs` LTS 包 (v{v1})
 
           `openclaw-env setup` 会在 ARM64 musl 设备上默认直连下载 V2 当前版本，必要时再回退到 Release 元数据解析。
