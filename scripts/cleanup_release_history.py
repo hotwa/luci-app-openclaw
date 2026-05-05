@@ -5,8 +5,10 @@ import json
 import os
 import re
 import sys
+import time
+from http.client import RemoteDisconnected
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -25,6 +27,14 @@ GITEA_REPO = os.environ.get("GITEA_REPO", "")
 GITEA_TOKEN = os.environ.get("GITEA_TOKEN", "")
 
 KEEP_APP_RELEASES = max(1, int(os.environ.get("KEEP_APP_RELEASES", "1")))
+HTTP_RETRY_COUNT = max(1, int(os.environ.get("CLEANUP_HTTP_RETRIES", "4")))
+HTTP_RETRY_BACKOFF = max(0.1, float(os.environ.get("CLEANUP_HTTP_BACKOFF", "1.0")))
+STRICT_GITEA_CLEANUP = os.environ.get("STRICT_GITEA_CLEANUP", "0") == "1"
+
+
+def _retry_delay(attempt: int) -> float:
+    # 1.0, 2.0, 4.0, 8.0 ... capped at 30s
+    return min(30.0, HTTP_RETRY_BACKOFF * (2 ** max(0, attempt - 1)))
 
 
 def request_json(method: str, url: str, token: str | None = None, auth_style: str = "bearer"):
@@ -41,17 +51,37 @@ def request_json(method: str, url: str, token: str | None = None, auth_style: st
             headers["Authorization"] = f"token {token}"
 
     req = Request(url, method=method, headers=headers)
-    try:
-        with urlopen(req, timeout=60) as resp:
-            raw = resp.read()
-        if not raw:
-            return None
-        return json.loads(raw.decode("utf-8"))
-    except HTTPError as exc:
-        if exc.code == 404:
-            return None
-        body = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"{method} {url} failed: {exc.code} {exc.reason}\n{body}") from exc
+    for attempt in range(1, HTTP_RETRY_COUNT + 1):
+        try:
+            with urlopen(req, timeout=60) as resp:
+                raw = resp.read()
+            if not raw:
+                return None
+            return json.loads(raw.decode("utf-8"))
+        except HTTPError as exc:
+            if exc.code == 404:
+                return None
+            body = exc.read().decode("utf-8", errors="ignore")
+            retryable_status = {408, 425, 429, 500, 502, 503, 504}
+            if exc.code in retryable_status and attempt < HTTP_RETRY_COUNT:
+                delay = _retry_delay(attempt)
+                print(
+                    f"警告: HTTP {exc.code}，{delay:.1f}s 后重试 "
+                    f"({attempt}/{HTTP_RETRY_COUNT}) -> {method} {url}"
+                )
+                time.sleep(delay)
+                continue
+            raise RuntimeError(f"{method} {url} failed: {exc.code} {exc.reason}\n{body}") from exc
+        except (URLError, TimeoutError, RemoteDisconnected, ConnectionResetError, OSError) as exc:
+            if attempt < HTTP_RETRY_COUNT:
+                delay = _retry_delay(attempt)
+                print(
+                    f"警告: 网络异常 ({exc.__class__.__name__}: {exc})，"
+                    f"{delay:.1f}s 后重试 ({attempt}/{HTTP_RETRY_COUNT}) -> {method} {url}"
+                )
+                time.sleep(delay)
+                continue
+            raise RuntimeError(f"{method} {url} failed: {exc.__class__.__name__}: {exc}") from exc
 
 
 def github_api(method: str, path: str):
@@ -61,7 +91,13 @@ def github_api(method: str, path: str):
 def gitea_api(method: str, path: str):
     if not GITEA_API_BASE or not GITEA_REPO or not GITEA_TOKEN:
         return None
-    return request_json(method, f"{GITEA_API_BASE}{path}", GITEA_TOKEN, "token")
+    try:
+        return request_json(method, f"{GITEA_API_BASE}{path}", GITEA_TOKEN, "token")
+    except RuntimeError as exc:
+        if STRICT_GITEA_CLEANUP:
+            raise
+        print(f"警告: Gitea API 调用失败，已跳过: {method} {path} ({exc})")
+        return None
 
 
 def delete_github_release(release_id: int):
