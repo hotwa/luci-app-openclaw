@@ -321,7 +321,7 @@ act.cfgvalue = function(self, section)
 	html[#html+1] = '}'
 	html[#html+1] = 'if(msgs.length===0)msgs.push("<span style=\\"color:#999\\">无法获取版本信息</span>");'
 	html[#html+1] = 'el.innerHTML=msgs.join("<br/>");'
-	-- 插件有更新时: release notes + 一键升级按钮 + GitHub 下载链接
+	-- 插件有更新时: release notes + 一键升级按钮 + Gitea 手动下载链接
 	html[#html+1] = 'if(r.plugin_has_update){'
 	html[#html+1] = 'act.style.display="block";'
 	html[#html+1] = 'window._pluginLatestVer=r.plugin_latest;'
@@ -335,7 +335,7 @@ act.cfgvalue = function(self, section)
 	html[#html+1] = '}'
 	html[#html+1] = 'act.innerHTML=notesHtml'
 	html[#html+1] = '+\'<button class="btn cbi-button cbi-button-apply" type="button" onclick="ocPluginUpgrade()" id="btn-plugin-upgrade">⬆️ 升级插件 v\'+r.plugin_latest+\'</button>\''
-	html[#html+1] = '+\' <a href="https://github.com/10000ge10000/luci-app-openclaw/releases/latest" target="_blank" rel="noopener" class="btn cbi-button cbi-button-action" style="text-decoration:none;">📥 手动下载</a>\';'
+	html[#html+1] = '+\' <a href="https://gitea.jmsu.top/lingyuzeng/luci-app-openclaw/releases/tag/v\'+r.plugin_latest+\'" target="_blank" rel="noopener" class="btn cbi-button cbi-button-action" style="text-decoration:none;">📥 手动下载</a>\';'
 	html[#html+1] = '}'
 	html[#html+1] = '}catch(e){el.innerHTML="<span style=\\"color:red\\">❌ 检测失败</span>";}'
 	html[#html+1] = '});}'

@@ -3,7 +3,7 @@
 # OpenList 网盘同步脚本 — 补齐所有历史版本 + 上传更新记录
 #
 # 功能:
-#   1. 从 GitHub Releases 下载所有版本的 .run + .ipk
+#   1. 从 GitHub Releases 下载所有版本的 .run + .ipk + .apk
 #   2. 从 CHANGELOG.md 提取每个版本的更新记录，生成 更新记录.txt
 #   3. 上传到 OpenList 网盘的 openclaw-在线安装 目录
 #
@@ -208,7 +208,21 @@ for VER in $ALL_VERSIONS; do
 		fi
 	fi
 
-	# 3) 生成并上传 更新记录.txt
+	# 3) 下载 .apk
+	APK_FILE="luci-app-openclaw_${VER}-r1_all.apk"
+	if remote_file_exists "$TOKEN" "$REMOTE_DIR" "$APK_FILE"; then
+		log_skip "${APK_FILE} 已存在于网盘"
+	else
+		echo "  下载 ${APK_FILE}..."
+		if download_release_file "$VER" "$APK_FILE" "${VER_DIR}/${APK_FILE}"; then
+			upload_file "$TOKEN" "${VER_DIR}/${APK_FILE}" "$REMOTE_DIR"
+			TOTAL_UPLOADED=$((TOTAL_UPLOADED + 1))
+		else
+			log_error "${APK_FILE} 下载失败"
+		fi
+	fi
+
+	# 4) 生成并上传 更新记录.txt
 	CHANGELOG_FILE="更新记录.txt"
 	if remote_file_exists "$TOKEN" "$REMOTE_DIR" "$CHANGELOG_FILE"; then
 		log_skip "${CHANGELOG_FILE} 已存在于网盘"

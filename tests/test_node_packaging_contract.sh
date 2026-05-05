@@ -6,9 +6,11 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 
 BUILD_SCRIPT="$REPO_ROOT/scripts/build-node-musl.sh"
 WORKFLOW="$REPO_ROOT/.github/workflows/build-node-musl.yml"
+MAIN_WORKFLOW="$REPO_ROOT/.github/workflows/build.yml"
 MAKEFILE="$REPO_ROOT/Makefile"
 BUILD_IPK="$REPO_ROOT/scripts/build_ipk.sh"
 BUILD_RUN="$REPO_ROOT/scripts/build_run.sh"
+BUILD_APK="$REPO_ROOT/scripts/build_apk.sh"
 ENV_SCRIPT="$REPO_ROOT/root/usr/bin/openclaw-env"
 CONTROLLER_SCRIPT="$REPO_ROOT/luasrc/controller/openclaw.lua"
 BASIC_LUA="$REPO_ROOT/luasrc/model/cbi/openclaw/basic.lua"
@@ -84,11 +86,15 @@ fi
 grep -Fq 'openclaw-paths.sh' "$BUILD_IPK" || fail "ipk builder should package path helper"
 grep -Fq 'openclaw-node.sh' "$BUILD_IPK" || fail "ipk builder should package node helper"
 grep -Fq 'openclaw/paths.lua' "$BUILD_IPK" || fail "ipk builder should package Lua path helper"
+grep -Fq 'apk mkpkg' "$BUILD_APK" || fail "apk builder should use apk mkpkg"
+grep -Fq 'luci-app-openclaw_${VER}-r1_all.apk' "$REPO_ROOT/scripts/gen-release-body.sh" || fail "release body should include apk install command"
 grep -Fq 'openclaw-paths.sh' "$BUILD_RUN" || fail "run builder should package path helper"
 grep -Fq 'openclaw-node.sh' "$BUILD_RUN" || fail "run builder should package node helper"
 grep -Fq 'openclaw/paths.lua' "$BUILD_RUN" || fail "run builder should package Lua path helper"
+grep -Fq 'Build .apk package' "$MAIN_WORKFLOW" || fail "main workflow should build apk package"
+grep -Fq 'dist/*.apk' "$MAIN_WORKFLOW" || fail "main workflow should publish apk artifact"
 
-python - "$ENV_SCRIPT" "$PROFILE_SCRIPT" "$UCI_DEFAULTS_SCRIPT" "$INIT_SCRIPT" "$PATHS_HELPER" "$NODE_HELPER" "$BUILD_IPK" "$BUILD_RUN" "$BUILD_SCRIPT" <<'PY' || fail "shell-oriented source files must use LF line endings"
+python - "$ENV_SCRIPT" "$PROFILE_SCRIPT" "$UCI_DEFAULTS_SCRIPT" "$INIT_SCRIPT" "$PATHS_HELPER" "$NODE_HELPER" "$BUILD_IPK" "$BUILD_RUN" "$BUILD_APK" "$BUILD_SCRIPT" <<'PY' || fail "shell-oriented source files must use LF line endings"
 from pathlib import Path
 import sys
 
@@ -117,7 +123,7 @@ grep -Fq 'XDG_CACHE_HOME="${OC_DATA}/.cache" \' "$INIT_SCRIPT" || fail "service 
 grep -Fq 'NPM_CONFIG_PREFIX: OC_GLOBAL' "$WEB_PTY_SCRIPT" || fail "web PTY environment should pass npm prefix into custom install root"
 grep -Fq 'NPM_CONFIG_CACHE: `${OC_DATA}/.npm`' "$WEB_PTY_SCRIPT" || fail "web PTY environment should pass npm cache into custom data root"
 grep -Fq 'COREPACK_HOME: `${OC_DATA}/.cache/corepack`' "$WEB_PTY_SCRIPT" || fail "web PTY environment should pass corepack cache into custom data root"
-grep -Fq "https://github.com/10000ge10000/luci-app-openclaw/releases/latest" "$BASIC_LUA" || fail "UI should link manual download to upstream repo"
+grep -Fq "https://gitea.jmsu.top/lingyuzeng/luci-app-openclaw/releases/tag/v" "$BASIC_LUA" || fail "UI should link manual download to gitea release page"
 grep -Fq "ARM64 musl" "$BASIC_LUA" || fail "UI should mention ARM64 musl specific guidance"
 grep -Fq "10000ge10000/luci-app-openclaw" "$BASIC_LUA" || fail "UI should point ARM64 musl guidance at upstream repo"
 if grep -Fq 'NODE_MIRROR=https://npmmirror.com/mirrors/node openclaw-env setup' "$BASIC_LUA"; then

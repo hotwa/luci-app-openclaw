@@ -55,7 +55,16 @@ wget "https://github.com/hotwa/luci-app-openclaw/releases/download/v${VER}/luci-
 opkg install "luci-app-openclaw_${VER}-1_all.ipk"
 ```
 
-### 方式三：集成到固件编译
+### 方式三：.apk 安装（OpenWrt 25.12+）
+
+```bash
+# 下载最新版本（自动获取版本号）
+VER=$(curl -sI "https://github.com/hotwa/luci-app-openclaw/releases/latest" 2>/dev/null | grep -i "location:" | sed 's/.*tag\/v\{0,1\}//' | tr -d '\r\n')
+wget "https://github.com/hotwa/luci-app-openclaw/releases/download/v${VER}/luci-app-openclaw_${VER}-r1_all.apk"
+apk add --allow-untrusted "luci-app-openclaw_${VER}-r1_all.apk"
+```
+
+### 方式四：集成到固件编译
 
 适用于自行编译固件或使用在线编译平台的用户。
 

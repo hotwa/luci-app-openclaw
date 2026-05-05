@@ -640,7 +640,7 @@ function action_check_update()
 	local http = require "luci.http"
 	local sys = require "luci.sys"
 
-	-- 插件版本检查 (从 GitHub API 获取最新 release tag + release notes)
+	-- 插件版本检查 (优先 Gitea API, 失败回退 GitHub API)
 	local plugin_current = ""
 	local pf = io.open("/usr/share/openclaw/VERSION", "r")
 		or io.open("/root/luci-app-openclaw/VERSION", "r")
@@ -654,8 +654,9 @@ function action_check_update()
 	local plugin_has_update = false
 
 	local sources = {
-		{ api = GITHUB_API_RELEASES_URL, releases = GITHUB_RELEASES_URL },
+		-- 国内网络优先走 Gitea 镜像，失败时回退 GitHub
 		{ api = GITEA_API_RELEASES_URL, releases = GITEA_RELEASES_URL },
+		{ api = GITHUB_API_RELEASES_URL, releases = GITHUB_RELEASES_URL },
 	}
 
 	for _, source in ipairs(sources) do
@@ -743,7 +744,7 @@ function action_get_token()
 end
 
 -- ═══════════════════════════════════════════
--- 插件升级 API (后台下载 .run 并执行)
+-- 插件升级 API (后台下载升级包并执行)
 -- 参数: version — 目标版本号 (如 1.0.8)
 -- ═══════════════════════════════════════════
 function action_plugin_upgrade()
@@ -767,45 +768,98 @@ function action_plugin_upgrade()
 	-- 清理旧日志和状态
 	sys.exec("rm -f /tmp/openclaw-plugin-upgrade.log /tmp/openclaw-plugin-upgrade.pid /tmp/openclaw-plugin-upgrade.exit")
 
-	-- 后台执行: 下载 .run 并执行安装
-	local run_url = GITHUB_RELEASES_URL .. "/download/v" .. version .. "/luci-app-openclaw_" .. version .. ".run"
-	-- 使用 curl 下载 (-L 跟随重定向), 然后 sh 执行
+	-- 后台执行:
+	-- 1) 优先下载 Gitea 镜像 (失败回退 GitHub)
+	-- 2) 若系统存在 apk, 优先尝试 .apk 安装 (失败回退 .run)
+	local run_url_gitea = GITEA_RELEASES_URL .. "/download/v" .. version .. "/luci-app-openclaw_" .. version .. ".run"
+	local run_url_github = GITHUB_RELEASES_URL .. "/download/v" .. version .. "/luci-app-openclaw_" .. version .. ".run"
+	local apk_url_gitea = GITEA_RELEASES_URL .. "/download/v" .. version .. "/luci-app-openclaw_" .. version .. "-r1_all.apk"
+	local apk_url_github = GITHUB_RELEASES_URL .. "/download/v" .. version .. "/luci-app-openclaw_" .. version .. "-r1_all.apk"
+	local apk_legacy_url_gitea = GITEA_RELEASES_URL .. "/download/v" .. version .. "/luci-app-openclaw_" .. version .. "-1_all.apk"
+	local apk_legacy_url_github = GITHUB_RELEASES_URL .. "/download/v" .. version .. "/luci-app-openclaw_" .. version .. "-1_all.apk"
 	sys.exec(string.format(
 		"( echo '正在下载插件 v%s ...' > /tmp/openclaw-plugin-upgrade.log; " ..
-		"curl -sL --connect-timeout 15 --max-time 120 -o /tmp/luci-app-openclaw-update.run '%s' >> /tmp/openclaw-plugin-upgrade.log 2>&1; " ..
-		"RC=$?; " ..
-		"if [ $RC -ne 0 ]; then " ..
-		"  echo '下载失败 (curl exit: '$RC')' >> /tmp/openclaw-plugin-upgrade.log; " ..
-		"  echo '如果无法访问 GitHub，请手动下载: %s' >> /tmp/openclaw-plugin-upgrade.log; " ..
-		"  echo $RC > /tmp/openclaw-plugin-upgrade.exit; " ..
-		"else " ..
-		"  FSIZE=$(wc -c < /tmp/luci-app-openclaw-update.run 2>/dev/null | tr -d ' '); " ..
+		"ASSET_KIND='run'; TARGET_FILE='/tmp/luci-app-openclaw-update.run'; " ..
+		"URLS='%s %s'; " ..
+		"if command -v apk >/dev/null 2>&1; then " ..
+		"  ASSET_KIND='apk'; TARGET_FILE='/tmp/luci-app-openclaw-update.apk'; " ..
+		"  URLS='%s %s %s %s %s %s'; " ..
+		"  echo '检测到 apk 包管理器，优先尝试 .apk 升级包...' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"fi; " ..
+		"DL_OK=0; LAST_URL=''; LAST_RC=1; " ..
+		"for U in $URLS; do " ..
+		"  [ -n \"$U\" ] || continue; " ..
+		"  LAST_URL=\"$U\"; " ..
+		"  echo \"尝试下载: $U\" >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"  curl -sL --connect-timeout 15 --max-time 120 -o \"$TARGET_FILE\" \"$U\" >> /tmp/openclaw-plugin-upgrade.log 2>&1; " ..
+		"  RC=$?; LAST_RC=$RC; " ..
+		"  if [ $RC -ne 0 ]; then " ..
+		"    echo \"下载失败 (curl exit: $RC)\" >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"    continue; " ..
+		"  fi; " ..
+		"  FSIZE=$(wc -c < \"$TARGET_FILE\" 2>/dev/null | tr -d ' '); " ..
 		"  echo \"下载完成 (${FSIZE} bytes)\" >> /tmp/openclaw-plugin-upgrade.log; " ..
-		"  FHEAD=$(head -c 9 /tmp/luci-app-openclaw-update.run 2>/dev/null); " ..
+		"  FHEAD=$(head -c 9 \"$TARGET_FILE\" 2>/dev/null); " ..
 		"  if [ \"$FSIZE\" -lt 10000 ] 2>/dev/null; then " ..
 		"    if [ \"$FHEAD\" = 'Not Found' ]; then " ..
-		"      echo '❌ GitHub 返回 \"Not Found\"，可能是网络被拦截（GFW）或 Release 资产不存在' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"      echo '⚠️ 远端返回 Not Found，继续尝试下一个镜像...' >> /tmp/openclaw-plugin-upgrade.log; " ..
 		"    else " ..
-		"      echo '❌ 文件过小，可能 GitHub 访问受限或网络异常' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"      echo '⚠️ 文件过小，可能是网络异常或资产缺失，继续尝试下一个镜像...' >> /tmp/openclaw-plugin-upgrade.log; " ..
 		"    fi; " ..
-		"    echo '请检查路由器是否能访问 github.com，或手动下载后安装: %s' >> /tmp/openclaw-plugin-upgrade.log; " ..
-		"    echo 1 > /tmp/openclaw-plugin-upgrade.exit; " ..
-		"  else " ..
-		"    echo '' >> /tmp/openclaw-plugin-upgrade.log; " ..
-		"    echo '正在安装...' >> /tmp/openclaw-plugin-upgrade.log; " ..
-		"    sh /tmp/luci-app-openclaw-update.run >> /tmp/openclaw-plugin-upgrade.log 2>&1; " ..
-		"    RC2=$?; echo $RC2 > /tmp/openclaw-plugin-upgrade.exit; " ..
-		"    if [ $RC2 -eq 0 ]; then " ..
-		"      echo '' >> /tmp/openclaw-plugin-upgrade.log; " ..
-		"      echo '✅ 插件升级完成！请刷新浏览器页面。' >> /tmp/openclaw-plugin-upgrade.log; " ..
-		"    else " ..
-		"      echo '安装执行失败 (exit: '$RC2')' >> /tmp/openclaw-plugin-upgrade.log; " ..
-		"    fi; " ..
+		"    continue; " ..
 		"  fi; " ..
-		"  rm -f /tmp/luci-app-openclaw-update.run; " ..
+		"  DL_OK=1; break; " ..
+		"done; " ..
+		"if [ $DL_OK -ne 1 ]; then " ..
+		"  echo '❌ 所有下载地址均失败。' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"  echo \"最后尝试地址: $LAST_URL\" >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"  echo '请手动下载后安装: %s' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"  echo $LAST_RC > /tmp/openclaw-plugin-upgrade.exit; " ..
+		"  rm -f /tmp/luci-app-openclaw-update.run /tmp/luci-app-openclaw-update.apk; " ..
+		"else " ..
+		"  echo '' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"  if [ \"$ASSET_KIND\" = 'apk' ]; then " ..
+		"    echo '正在通过 apk 安装...' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"    apk add --allow-untrusted --repositories-file /dev/null \"$TARGET_FILE\" >> /tmp/openclaw-plugin-upgrade.log 2>&1; " ..
+		"    RC2=$?; " ..
+		"    if [ $RC2 -ne 0 ]; then " ..
+		"      echo 'apk 安装失败，回退到 .run 安装器...' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"      RUN_OK=0; " ..
+		"      for RU in '%s' '%s'; do " ..
+		"        echo \"尝试下载 .run: $RU\" >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"        curl -sL --connect-timeout 15 --max-time 120 -o /tmp/luci-app-openclaw-update.run \"$RU\" >> /tmp/openclaw-plugin-upgrade.log 2>&1; " ..
+		"        RC3=$?; " ..
+		"        if [ $RC3 -eq 0 ]; then " ..
+		"          FSIZE2=$(wc -c < /tmp/luci-app-openclaw-update.run 2>/dev/null | tr -d ' '); " ..
+		"          if [ \"$FSIZE2\" -ge 10000 ] 2>/dev/null; then RUN_OK=1; break; fi; " ..
+		"        fi; " ..
+		"      done; " ..
+		"      if [ $RUN_OK -eq 1 ]; then " ..
+		"        sh /tmp/luci-app-openclaw-update.run >> /tmp/openclaw-plugin-upgrade.log 2>&1; RC2=$?; " ..
+		"      else " ..
+		"        RC2=1; echo '回退 .run 下载失败' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"      fi; " ..
+		"    fi; " ..
+		"  else " ..
+		"    echo '正在安装...' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"    sh \"$TARGET_FILE\" >> /tmp/openclaw-plugin-upgrade.log 2>&1; " ..
+		"    RC2=$?; " ..
+		"  fi; " ..
+		"  echo $RC2 > /tmp/openclaw-plugin-upgrade.exit; " ..
+		"  if [ $RC2 -eq 0 ]; then " ..
+		"    echo '' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"    echo '✅ 插件升级完成！请刷新浏览器页面。' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"  else " ..
+		"    echo '安装执行失败 (exit: '$RC2')' >> /tmp/openclaw-plugin-upgrade.log; " ..
+		"  fi; " ..
+		"  rm -f /tmp/luci-app-openclaw-update.run /tmp/luci-app-openclaw-update.apk; " ..
 		"fi " ..
 		") & echo $! > /tmp/openclaw-plugin-upgrade.pid",
-		version, run_url, run_url, run_url
+		version,
+		run_url_gitea, run_url_github,
+		apk_url_gitea, apk_url_github, apk_legacy_url_gitea, apk_legacy_url_github, run_url_gitea, run_url_github,
+		GITEA_RELEASES_URL .. "/tag/v" .. version,
+		run_url_gitea, run_url_github
 	))
 
 	http.prepare_content("application/json")

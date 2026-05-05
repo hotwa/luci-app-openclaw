@@ -102,13 +102,22 @@ jobs:
           chmod +x scripts/build_ipk.sh
           sh scripts/build_ipk.sh dist
 
+      - name: Build .apk package
+        run: |
+          chmod +x scripts/build_apk.sh
+          docker run --rm \
+            -v "$PWD":/work \
+            -w /work \
+            archlinux:latest \
+            sh -lc "pacman -Sy --noconfirm apk-tools >/dev/null && sh scripts/build_apk.sh dist"
+
       - name: List outputs
         run: |
           echo "=== Build artifacts ==="
           ls -lh dist/
           echo ""
           echo "=== SHA256 checksums ==="
-          sha256sum dist/*.run dist/*.ipk 2>/dev/null || true
+          sha256sum dist/*.run dist/*.ipk dist/*.apk 2>/dev/null || true
 
       - name: Extract changelog
         id: changelog
@@ -159,6 +168,7 @@ jobs:
           files: |
             dist/*.run
             dist/*.ipk
+            dist/*.apk
           draft: false
           prerelease: false
           body_path: .release/release-body.md

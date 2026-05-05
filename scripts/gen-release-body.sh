@@ -33,6 +33,9 @@ fi
   echo ''
   echo '# OpenWrt'
   echo "opkg install luci-app-openclaw_${VER}-1_all.ipk"
+  echo ''
+  echo '# OpenWrt (APK)'
+  echo "apk add --allow-untrusted luci-app-openclaw_${VER}-r1_all.apk"
   echo '```'
   echo ''
 echo '[使用文档](https://github.com/hotwa/luci-app-openclaw#readme) · [问题反馈](https://github.com/hotwa/luci-app-openclaw/issues) · [B站](https://space.bilibili.com/59438380) · [博客](https://blog.910501.xyz/)'

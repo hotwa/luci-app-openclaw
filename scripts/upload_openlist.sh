@@ -51,7 +51,7 @@ local code=$(echo "$resp" | grep -o '"code":[0-9]*' | grep -o '[0-9]*' | head -n
 if [ "$code" = "200" ]; then echo "  [✓] 上传成功"; else echo "  [✗] 失败: $resp"; fi
 }
 
-UPLOAD_FILES=$(find "$DIST_DIR" -type f -name "*.run" -o -name "*.ipk" 2>/dev/null)
+UPLOAD_FILES=$(find "$DIST_DIR" -type f \( -name "*.run" -o -name "*.ipk" -o -name "*.apk" \) 2>/dev/null)
 if [ -z "$UPLOAD_FILES" ]; then echo "错误: 未找到可上传文件"; exit 1; fi
 
 TOKEN=$(get_token)
