@@ -29,10 +29,13 @@ act.rawhtml = true
 act.cfgvalue = function(self, section)
 	local ctl_url = luci.dispatcher.build_url("admin", "services", "openclaw", "service_ctl")
 	local log_url = luci.dispatcher.build_url("admin", "services", "openclaw", "setup_log")
+	local status_url = luci.dispatcher.build_url("admin", "services", "openclaw", "status_api")
 	local check_url = luci.dispatcher.build_url("admin", "services", "openclaw", "check_update")
 	local uninstall_url = luci.dispatcher.build_url("admin", "services", "openclaw", "uninstall")
 	local plugin_upgrade_url = luci.dispatcher.build_url("admin", "services", "openclaw", "plugin_upgrade")
 	local plugin_upgrade_log_url = luci.dispatcher.build_url("admin", "services", "openclaw", "plugin_upgrade_log")
+	local runtime_upgrade_url = luci.dispatcher.build_url("admin", "services", "openclaw", "runtime_upgrade")
+	local runtime_upgrade_log_url = luci.dispatcher.build_url("admin", "services", "openclaw", "runtime_upgrade_log")
 	local check_system_url = luci.dispatcher.build_url("admin", "services", "openclaw", "check_system")
 	local html = {}
 
@@ -42,6 +45,7 @@ act.cfgvalue = function(self, section)
 	html[#html+1] = '<button class="btn cbi-button cbi-button-action" type="button" onclick="ocServiceCtl(\'restart\')">🔄 重启服务</button>'
 	html[#html+1] = '<button class="btn cbi-button cbi-button-action" type="button" onclick="ocServiceCtl(\'stop\')">⏹️ 停止服务</button>'
 	html[#html+1] = '<span style="position:relative;display:inline-block;" id="btn-check-update-wrap"><button class="btn cbi-button cbi-button-action" type="button" onclick="ocCheckUpdate()" id="btn-check-update">🔍 检测升级</button><span id="update-dot" style="display:none;position:absolute;top:-2px;right:-2px;width:10px;height:10px;background:#e36209;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #e36209;"></span></span>'
+	html[#html+1] = '<span style="position:relative;display:inline-block;" id="btn-runtime-upgrade-wrap"><button class="btn cbi-button cbi-button-apply" type="button" onclick="ocRuntimeUpgrade()" id="btn-runtime-upgrade" title="升级实际运行目录中的 OpenClaw Node.js 程序">⬆️ 升级 OpenClaw</button><span id="runtime-update-dot" style="display:none;position:absolute;top:-2px;right:-2px;width:10px;height:10px;background:#cf222e;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #cf222e;"></span></span>'
 	html[#html+1] = '<button class="btn cbi-button cbi-button-action" type="button" onclick="ocBackupRestore()" id="btn-backup" title="备份或恢复 OpenClaw 配置">💾 备份/恢复</button>'
 	html[#html+1] = '<button class="btn cbi-button cbi-button-remove" type="button" onclick="ocUninstall()" id="btn-uninstall" title="删除 Node.js、OpenClaw 运行环境及相关数据">🗑️ 卸载环境</button>'
 	html[#html+1] = '</div>'
@@ -97,6 +101,10 @@ act.cfgvalue = function(self, section)
 	html[#html+1] = 'var _setupTimer=null;'
 	html[#html+1] = 'var _ocLastInstallRoot=' .. string.format("%q", current_install_root) .. ';'
 	html[#html+1] = 'var _ocLastInstallPath=' .. string.format("%q", current_oc_root) .. ';'
+	html[#html+1] = 'function ocVersionClean(v){return String(v||"").replace(/^v/i,"").replace(/^\\s+|\\s+$/g,"");}'
+	html[#html+1] = 'function ocRuntimeNeedsUpgrade(ocVer,pluginVer){ocVer=ocVersionClean(ocVer);pluginVer=ocVersionClean(pluginVer);return !!(ocVer&&pluginVer&&ocVer!==pluginVer);}'
+	html[#html+1] = 'function ocSetRuntimeUpgradeHint(needs,ocVer,pluginVer){var dot=document.getElementById("runtime-update-dot");var btn=document.getElementById("btn-runtime-upgrade");if(dot)dot.style.display=needs?"block":"none";if(btn){if(needs){btn.style.boxShadow="0 0 0 2px rgba(207,34,46,.18)";btn.title="OpenClaw 运行体 v"+ocVersionClean(ocVer)+" 与插件 v"+ocVersionClean(pluginVer)+" 不一致，点击升级对齐";}else{btn.style.boxShadow="";btn.title="升级实际运行目录中的 OpenClaw Node.js 程序";}}}'
+	html[#html+1] = 'function ocRefreshRuntimeUpgradeHint(){(new XHR()).get("' .. status_url .. '",null,function(x){try{var r=JSON.parse(x.responseText);ocSetRuntimeUpgradeHint(ocRuntimeNeedsUpgrade(r.oc_version,r.plugin_version),r.oc_version,r.plugin_version);}catch(e){}});}'
 	html[#html+1] = 'function ocNormalizeInstallRoot(v){v=(v||"").replace(/^\\s+|\\s+$/g,"");if(!v)return"/opt";if(v.charAt(0)!=="/")return null;if(/\\s/.test(v))return null;v=v.replace(/\\/+$/,"");return v||"/";}'
 	html[#html+1] = 'function ocGetActualInstallPath(root){return root==="/"?"/openclaw":root+"/openclaw";}'
 	html[#html+1] = 'function ocRefreshInstallRootPreview(){var input=document.getElementById("oc-install-root");var preview=document.getElementById("oc-install-root-preview");if(!input||!preview)return;var root=ocNormalizeInstallRoot(input.value);if(!root){preview.innerHTML="<span style=\\"color:#cf222e;\\">请输入绝对路径，且不要包含空格，例如 <code>/mnt/emmc</code></span>";return;}preview.innerHTML="实际安装目录: <code>"+ocGetActualInstallPath(root)+"</code>";}'
@@ -290,6 +298,7 @@ act.cfgvalue = function(self, section)
 	html[#html+1] = 'return reasons.join("<br/><br/>");'
 	html[#html+1] = '}'
 	html[#html+1] = 'var _ocInstallRootInput=document.getElementById("oc-install-root");if(_ocInstallRootInput){_ocInstallRootInput.oninput=ocRefreshInstallRootPreview;_ocInstallRootInput.onchange=ocRefreshInstallRootPreview;}'
+	html[#html+1] = 'ocRefreshRuntimeUpgradeHint();setInterval(ocRefreshRuntimeUpgradeHint,5000);'
 
 	-- 普通服务操作 (restart/stop)
 	html[#html+1] = 'function ocServiceCtl(action){'
@@ -418,6 +427,74 @@ act.cfgvalue = function(self, section)
 	html[#html+1] = '"<strong style=\\"color:#cf222e;font-size:14px;\\">❌ 插件升级失败</strong><br/>"+'
 	html[#html+1] = '"<span style=\\"color:#555;font-size:13px;\\">请查看上方日志了解详情。也可手动执行：<code>cat /tmp/openclaw-plugin-upgrade.log</code></span><br/>"+'
 	html[#html+1] = '"<button class=\\"btn cbi-button cbi-button-apply\\" type=\\"button\\" onclick=\\"location.reload()\\" style=\\"margin-top:10px;\\">🔄 刷新页面</button></div>";'
+	html[#html+1] = '}'
+	html[#html+1] = '}'
+
+	-- ═══ OpenClaw 运行体一键升级 ═══
+	html[#html+1] = 'var _runtimeUpgradeTimer=null;'
+
+	html[#html+1] = 'function ocRuntimeUpgrade(){'
+	html[#html+1] = 'if(!confirm("确定要升级 OpenClaw 运行体？\\n\\n将使用当前安装根目录 "+_ocLastInstallRoot+" 执行 openclaw-env upgrade，成功后会自动重启服务。"))return;'
+	html[#html+1] = 'var btn=document.getElementById("btn-runtime-upgrade");'
+	html[#html+1] = 'var panel=document.getElementById("setup-log-panel");'
+	html[#html+1] = 'var logEl=document.getElementById("setup-log-content");'
+	html[#html+1] = 'var titleEl=document.getElementById("setup-log-title");'
+	html[#html+1] = 'var statusEl=document.getElementById("setup-log-status");'
+	html[#html+1] = 'var resultEl=document.getElementById("setup-log-result");'
+	html[#html+1] = 'btn.disabled=true;btn.textContent="⏳ 正在升级 OpenClaw...";'
+	html[#html+1] = 'panel.style.display="block";'
+	html[#html+1] = 'logEl.textContent="正在启动 OpenClaw 升级...\\n";'
+	html[#html+1] = 'titleEl.textContent="📋 OpenClaw 升级日志";'
+	html[#html+1] = 'statusEl.innerHTML="<span style=\\"color:#7aa2f7;\\">⏳ OpenClaw 升级中...</span>";'
+	html[#html+1] = 'resultEl.style.display="none";'
+	html[#html+1] = '(new XHR()).get("' .. runtime_upgrade_url .. '",null,function(x){'
+	html[#html+1] = 'try{var r=JSON.parse(x.responseText);if(r.status&&r.status!=="ok"){logEl.textContent+="❌ "+(r.message||"升级启动失败")+"\\n";ocRuntimeUpgradeDone(false);return;}if(r.install_root){_ocLastInstallRoot=r.install_root;_ocLastInstallPath=r.oc_root||ocGetActualInstallPath(r.install_root);}}catch(e){}'
+	html[#html+1] = 'ocPollRuntimeUpgradeLog();'
+	html[#html+1] = '});'
+	html[#html+1] = '}'
+
+	html[#html+1] = 'function ocPollRuntimeUpgradeLog(){'
+	html[#html+1] = 'if(_runtimeUpgradeTimer)clearInterval(_runtimeUpgradeTimer);'
+	html[#html+1] = '_runtimeUpgradeTimer=setInterval(function(){'
+	html[#html+1] = '(new XHR()).get("' .. runtime_upgrade_log_url .. '",null,function(x){'
+	html[#html+1] = 'try{'
+	html[#html+1] = 'var r=JSON.parse(x.responseText);'
+	html[#html+1] = 'var logEl=document.getElementById("setup-log-content");'
+	html[#html+1] = 'var statusEl=document.getElementById("setup-log-status");'
+	html[#html+1] = 'if(r.log)logEl.textContent=r.log;'
+	html[#html+1] = 'logEl.scrollTop=logEl.scrollHeight;'
+	html[#html+1] = 'if(r.state==="running"){'
+	html[#html+1] = 'statusEl.innerHTML="<span style=\\"color:#7aa2f7;\\">⏳ OpenClaw 升级中...</span>";'
+	html[#html+1] = '}else if(r.state==="success"){'
+	html[#html+1] = 'clearInterval(_runtimeUpgradeTimer);_runtimeUpgradeTimer=null;'
+	html[#html+1] = 'ocRuntimeUpgradeDone(true);'
+	html[#html+1] = '}else if(r.state==="failed"){'
+	html[#html+1] = 'clearInterval(_runtimeUpgradeTimer);_runtimeUpgradeTimer=null;'
+	html[#html+1] = 'ocRuntimeUpgradeDone(false);'
+	html[#html+1] = '}'
+	html[#html+1] = '}catch(e){}'
+	html[#html+1] = '});'
+	html[#html+1] = '},2000);'
+	html[#html+1] = '}'
+
+	html[#html+1] = 'function ocRuntimeUpgradeDone(ok){'
+	html[#html+1] = 'var btn=document.getElementById("btn-runtime-upgrade");'
+	html[#html+1] = 'var statusEl=document.getElementById("setup-log-status");'
+	html[#html+1] = 'var resultEl=document.getElementById("setup-log-result");'
+	html[#html+1] = 'if(btn){btn.disabled=false;btn.textContent="⬆️ 升级 OpenClaw";}'
+	html[#html+1] = 'resultEl.style.display="block";'
+	html[#html+1] = 'if(ok){'
+	html[#html+1] = 'setTimeout(ocRefreshRuntimeUpgradeHint,3000);'
+	html[#html+1] = 'statusEl.innerHTML="<span style=\\"color:#1a7f37;\\">✅ OpenClaw 升级完成</span>";'
+	html[#html+1] = 'resultEl.innerHTML="<div style=\\"border:1px solid #c6e9c9;background:#e6f7e9;padding:12px 16px;border-radius:6px;\\">"+'
+	html[#html+1] = '"<strong style=\\"color:#1a7f37;font-size:14px;\\">🎉 OpenClaw 升级成功！</strong><br/>"+'
+	html[#html+1] = '"<span style=\\"color:#555;font-size:13px;line-height:1.8;\\">服务已重启，请刷新页面查看新版本号。</span><br/>"+'
+	html[#html+1] = '"<button class=\\"btn cbi-button cbi-button-apply\\" type=\\"button\\" onclick=\\"location.reload()\\" style=\\"margin-top:10px;\\">🔄 刷新页面</button></div>";'
+	html[#html+1] = '}else{'
+	html[#html+1] = 'statusEl.innerHTML="<span style=\\"color:#cf222e;\\">❌ OpenClaw 升级失败</span>";'
+	html[#html+1] = 'resultEl.innerHTML="<div style=\\"border:1px solid #f5c6cb;background:#ffeef0;padding:12px 16px;border-radius:6px;\\">"+'
+	html[#html+1] = '"<strong style=\\"color:#cf222e;font-size:14px;\\">❌ OpenClaw 升级失败</strong><br/>"+'
+	html[#html+1] = '"<span style=\\"color:#555;font-size:13px;\\">请查看上方日志了解详情。也可在终端查看：<code>cat /tmp/openclaw-runtime-upgrade.log</code></span></div>";'
 	html[#html+1] = '}'
 	html[#html+1] = '}'
 

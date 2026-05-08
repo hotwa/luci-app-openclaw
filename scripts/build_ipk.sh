@@ -55,7 +55,9 @@ chmod +x "$DATA_DIR/usr/bin/openclaw-env"
 mkdir -p "$DATA_DIR/usr/libexec"
 cp "$PKG_DIR/root/usr/libexec/openclaw-paths.sh" "$DATA_DIR/usr/libexec/"
 cp "$PKG_DIR/root/usr/libexec/openclaw-node.sh" "$DATA_DIR/usr/libexec/"
-chmod +x "$DATA_DIR/usr/libexec/openclaw-paths.sh" "$DATA_DIR/usr/libexec/openclaw-node.sh"
+cp "$PKG_DIR/root/usr/libexec/openclaw-compat.sh" "$DATA_DIR/usr/libexec/"
+cp "$PKG_DIR/root/usr/libexec/openclaw-wechat.sh" "$DATA_DIR/usr/libexec/"
+chmod +x "$DATA_DIR/usr/libexec/openclaw-paths.sh" "$DATA_DIR/usr/libexec/openclaw-node.sh" "$DATA_DIR/usr/libexec/openclaw-compat.sh" "$DATA_DIR/usr/libexec/openclaw-wechat.sh"
 
 # LuCI controller
 mkdir -p "$DATA_DIR/usr/lib/lua/luci/controller"

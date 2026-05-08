@@ -58,7 +58,9 @@ install_files() {
 	mkdir -p "$dest/usr/libexec"
 	cp "$PKG_DIR/root/usr/libexec/openclaw-paths.sh" "$dest/usr/libexec/"
 	cp "$PKG_DIR/root/usr/libexec/openclaw-node.sh" "$dest/usr/libexec/"
-	chmod +x "$dest/usr/libexec/openclaw-paths.sh" "$dest/usr/libexec/openclaw-node.sh"
+	cp "$PKG_DIR/root/usr/libexec/openclaw-compat.sh" "$dest/usr/libexec/"
+	cp "$PKG_DIR/root/usr/libexec/openclaw-wechat.sh" "$dest/usr/libexec/"
+	chmod +x "$dest/usr/libexec/openclaw-paths.sh" "$dest/usr/libexec/openclaw-node.sh" "$dest/usr/libexec/openclaw-compat.sh" "$dest/usr/libexec/openclaw-wechat.sh"
 
 	# LuCI controller
 	mkdir -p "$dest/usr/lib/lua/luci/controller"

@@ -23,7 +23,7 @@ NODE_VERSION_V1="22.15.1"
 # 默认使用 V2 版本 (可通过 NODE_VERSION 环境变量覆盖)
 NODE_VERSION="${NODE_VERSION:-${NODE_VERSION_V2}}"
 # 经过验证的 OpenClaw 稳定版本 (更新此值需同步测试)
-OC_TESTED_VERSION="2026.3.22"
+OC_TESTED_VERSION="2026.5.7"
 # 用户可通过 OC_VERSION 环境变量覆盖安装版本
 OC_VERSION="${OC_VERSION:-}"
 oc_load_paths "$OPENCLAW_INSTALL_ROOT"
@@ -630,6 +630,14 @@ do_upgrade() {
 
 	echo "  Node.js:     v${installed_node_ver}"
 	[ -n "$current_ver" ] && echo "  当前版本:    v${current_ver}"
+	local target_ver="${OC_VERSION:-}"
+	local oc_pkg="openclaw@latest"
+	if [ -n "$target_ver" ]; then
+		oc_pkg="openclaw@${target_ver}"
+		echo "  目标版本:    v${target_ver}"
+	else
+		echo "  目标版本:    latest"
+	fi
 	echo ""
 
 	local libc_type
@@ -640,7 +648,7 @@ do_upgrade() {
 	echo "=== 正在升级 OpenClaw ==="
 	echo ""
 	ensure_runtime_cache_dirs
-	"$NPM_BIN" install -g openclaw@latest --prefix="$OC_GLOBAL" $install_flags 2>&1
+	"$NPM_BIN" install -g "$oc_pkg" --prefix="$OC_GLOBAL" $install_flags 2>&1
 	oc_apply_runtime_compat || true
 
 	# 验证升级结果

@@ -129,6 +129,14 @@ local function read_text_file(path)
 	return content
 end
 
+local function get_plugin_version()
+	local version = trim(read_text_file("/usr/share/openclaw/VERSION"))
+	if not version:match("^[%w%._%-]+$") then
+		return ""
+	end
+	return version
+end
+
 local function read_kv_file(path)
 	local values = {}
 
@@ -298,6 +306,10 @@ function index()
 	-- 插件升级日志 API (轮询)
 	entry({"admin", "services", "openclaw", "plugin_upgrade_log"}, call("action_plugin_upgrade_log"), nil).leaf = true
 
+	-- OpenClaw 运行体升级 API
+	entry({"admin", "services", "openclaw", "runtime_upgrade"}, call("action_runtime_upgrade"), nil).leaf = true
+	entry({"admin", "services", "openclaw", "runtime_upgrade_log"}, call("action_runtime_upgrade_log"), nil).leaf = true
+
 	-- 配置备份 API (v2026.3.8+: openclaw backup create/verify)
 	entry({"admin", "services", "openclaw", "backup"}, call("action_backup"), nil).leaf = true
 
@@ -353,11 +365,7 @@ function action_status()
 	}
 
 	-- 插件版本
-	local pvf = io.open("/usr/share/openclaw/VERSION", "r")
-	if pvf then
-		result.plugin_version = pvf:read("*a"):gsub("%s+", "")
-		pvf:close()
-	end
+	result.plugin_version = get_plugin_version()
 
 	-- 安装方式检测 (离线 / 在线)
 
@@ -897,6 +905,126 @@ function action_plugin_upgrade_log()
 	local exit_code = -1
 	if not running then
 		local exit_file = io.open("/tmp/openclaw-plugin-upgrade.exit", "r")
+		if exit_file then
+			local code = exit_file:read("*a"):gsub("%s+", "")
+			exit_file:close()
+			exit_code = tonumber(code) or -1
+		end
+	end
+
+	local state = "idle"
+	if running then
+		state = "running"
+	elseif exit_code == 0 then
+		state = "success"
+	elseif exit_code > 0 then
+		state = "failed"
+	end
+
+	http.prepare_content("application/json")
+	http.write_json({
+		status = "ok",
+		log = log,
+		state = state,
+		running = running,
+		exit_code = exit_code
+	})
+end
+
+-- ═══════════════════════════════════════════
+-- OpenClaw 运行体升级 API (后台执行 openclaw-env upgrade)
+-- ═══════════════════════════════════════════
+function action_runtime_upgrade()
+	local http = require "luci.http"
+	local sys = require "luci.sys"
+
+	local paths = get_runtime_paths()
+
+	if not file_exists("/usr/bin/openclaw-env") then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "未找到 /usr/bin/openclaw-env，请先升级或重装插件。" })
+		return
+	end
+
+	if not file_exists(get_node_bin(paths)) or find_oc_entry(paths) == "" then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "OpenClaw 运行环境未安装，请先点击「安装运行环境」。" })
+		return
+	end
+
+	local plugin_version = get_plugin_version()
+	local target_env = ""
+	local target_label = "latest"
+	if plugin_version ~= "" then
+		target_env = "OC_VERSION=" .. shell_quote(plugin_version) .. " "
+		target_label = "v" .. plugin_version
+	end
+
+	sys.exec("rm -f /tmp/openclaw-runtime-upgrade.log /tmp/openclaw-runtime-upgrade.pid /tmp/openclaw-runtime-upgrade.exit")
+	sys.exec(
+		"( " ..
+		"echo '正在升级 OpenClaw 运行体...' > /tmp/openclaw-runtime-upgrade.log; " ..
+		"echo '安装根目录: " .. shell_quote(paths.install_root) .. "' >> /tmp/openclaw-runtime-upgrade.log; " ..
+		"echo '实际运行目录: " .. shell_quote(paths.oc_root) .. "' >> /tmp/openclaw-runtime-upgrade.log; " ..
+		"echo '目标版本: " .. target_label .. "' >> /tmp/openclaw-runtime-upgrade.log; " ..
+		"echo '' >> /tmp/openclaw-runtime-upgrade.log; " ..
+		target_env .. "OPENCLAW_INSTALL_ROOT=" .. shell_quote(paths.install_root) .. " /usr/bin/openclaw-env upgrade >> /tmp/openclaw-runtime-upgrade.log 2>&1; " ..
+		"RC=$?; " ..
+		"if [ $RC -eq 0 ]; then " ..
+		"  echo '' >> /tmp/openclaw-runtime-upgrade.log; " ..
+		"  echo '正在重启 OpenClaw 服务...' >> /tmp/openclaw-runtime-upgrade.log; " ..
+		"  /etc/init.d/openclaw restart >> /tmp/openclaw-runtime-upgrade.log 2>&1; " ..
+		"  RC=$?; " ..
+		"fi; " ..
+		"echo $RC > /tmp/openclaw-runtime-upgrade.exit; " ..
+		"if [ $RC -eq 0 ]; then " ..
+		"  echo '' >> /tmp/openclaw-runtime-upgrade.log; " ..
+		"  echo '✅ OpenClaw 运行体升级完成！' >> /tmp/openclaw-runtime-upgrade.log; " ..
+		"else " ..
+		"  echo '' >> /tmp/openclaw-runtime-upgrade.log; " ..
+		"  echo '❌ OpenClaw 运行体升级失败 (exit: '$RC')' >> /tmp/openclaw-runtime-upgrade.log; " ..
+		"fi " ..
+		") & echo $! > /tmp/openclaw-runtime-upgrade.pid"
+	)
+
+	http.prepare_content("application/json")
+	http.write_json({
+		status = "ok",
+		message = "OpenClaw 升级已在后台启动...",
+		install_root = paths.install_root,
+		oc_root = paths.oc_root,
+		target_version = plugin_version
+	})
+end
+
+-- ═══════════════════════════════════════════
+-- OpenClaw 运行体升级日志轮询 API
+-- ═══════════════════════════════════════════
+function action_runtime_upgrade_log()
+	local http = require "luci.http"
+	local sys = require "luci.sys"
+
+	local log = ""
+	local f = io.open("/tmp/openclaw-runtime-upgrade.log", "r")
+	if f then
+		log = f:read("*a") or ""
+		f:close()
+	end
+
+	local running = false
+	local pid_file = io.open("/tmp/openclaw-runtime-upgrade.pid", "r")
+	if pid_file then
+		local pid = pid_file:read("*a"):gsub("%s+", "")
+		pid_file:close()
+		if pid ~= "" then
+			local check = sys.exec("kill -0 " .. pid .. " 2>/dev/null && echo yes || echo no"):gsub("%s+", "")
+			running = (check == "yes")
+		end
+	end
+
+	local exit_code = -1
+	if not running then
+		local exit_file = io.open("/tmp/openclaw-runtime-upgrade.exit", "r")
 		if exit_file then
 			local code = exit_file:read("*a"):gsub("%s+", "")
 			exit_file:close()
