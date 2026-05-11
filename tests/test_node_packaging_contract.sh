@@ -77,6 +77,7 @@ grep -Fq 'TMPDIR="${OC_DATA}/tmp"' "$ENV_SCRIPT" || fail "installer should force
 grep -Fq 'openclaw-paths.sh' "$MAKEFILE" || fail "package makefile should install path helper"
 grep -Fq 'openclaw-node.sh' "$MAKEFILE" || fail "package makefile should install node helper"
 grep -Fq 'openclaw/paths.lua' "$MAKEFILE" || fail "package makefile should install Lua path helper"
+grep -Fq 'PKG_RELEASE:=2' "$MAKEFILE" || fail "package release should bump after changing embedded download defaults"
 grep -Fq '+libstdcpp' "$MAKEFILE" || fail "package makefile should depend on libstdcpp"
 if grep -Fq 'libstdcpp6' "$MAKEFILE" "$BUILD_IPK" "$BUILD_RUN"; then
 	fail "packaging metadata should not reference libstdcpp6"
