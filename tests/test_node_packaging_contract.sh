@@ -50,24 +50,19 @@ grep -Fq '`node-v24.14.1-linux-arm64-musl.tar.xz`' "$WORKFLOW" || fail "release 
 if grep -Fq 'mirror_list="$mirror_list ${NODE_SELF_HOST}/${v1_tarball}"' "$ENV_SCRIPT"; then
 	fail "installer should not auto-fallback from V2 to V1 tarball"
 fi
-grep -Fq 'OPENCLAW_GITHUB_REPO="${OPENCLAW_GITHUB_REPO:-10000ge10000/luci-app-openclaw}"' "$ENV_SCRIPT" || fail "installer should default app repo to upstream"
-grep -Fq 'OPENCLAW_NODE_BINS_REPO="${OPENCLAW_NODE_BINS_REPO:-10000ge10000/luci-app-openclaw}"' "$ENV_SCRIPT" || fail "installer should default ARM64 musl node-bins to upstream"
+grep -Fq 'OPENCLAW_GITHUB_REPO="${OPENCLAW_GITHUB_REPO:-hotwa/luci-app-openclaw}"' "$ENV_SCRIPT" || fail "installer should default app repo to hotwa"
+grep -Fq 'OPENCLAW_NODE_BINS_REPO="${OPENCLAW_NODE_BINS_REPO:-hotwa/luci-app-openclaw}"' "$ENV_SCRIPT" || fail "installer should default ARM64 musl node-bins to hotwa"
 grep -Fq 'NODE_SELF_HOST="${NODE_SELF_HOST:-https://github.com/${OPENCLAW_NODE_BINS_REPO}/releases/download/node-bins}"' "$ENV_SCRIPT" || fail "installer should derive node-bins release URL from hotwa repo"
-if grep -Fq 'NODE_SELF_HOST_FALLBACK' "$ENV_SCRIPT"; then
-	fail "installer should not define a Gitea mirror fallback for ARM64 musl downloads"
-fi
+grep -Fq 'OPENCLAW_GITEA_REPO="${OPENCLAW_GITEA_REPO:-group/luci-app-openclaw}"' "$ENV_SCRIPT" || fail "installer should default Gitea mirror repo to group"
+grep -Fq 'NODE_SELF_HOST_FALLBACK="${NODE_SELF_HOST_FALLBACK:-https://gitea.jmsu.top/${OPENCLAW_GITEA_REPO}/releases/download/node-bins}"' "$ENV_SCRIPT" || fail "installer should use Gitea as node-bins fallback"
 grep -Fq 'NODE_RELEASE_API="${NODE_RELEASE_API:-https://api.github.com/repos/${OPENCLAW_NODE_BINS_REPO}/releases/tags/node-bins}"' "$ENV_SCRIPT" || fail "installer should derive node-bins release API from hotwa repo"
-if grep -Fq 'NODE_RELEASE_API_FALLBACK' "$ENV_SCRIPT"; then
-	fail "installer should not define a Gitea release API fallback"
-fi
-if grep -Fq 'NODE_RELEASE_PAGE_FALLBACK' "$ENV_SCRIPT"; then
-	fail "installer should not define a Gitea release page fallback"
-fi
-grep -Fq 'echo "  正在从 ${NODE_RELEASE_API} 获取 ARM64 musl 版本列表..." >&2' "$ENV_SCRIPT" || fail "installer should query a single ARM64 musl release API"
+grep -Fq 'NODE_RELEASE_API_FALLBACK="${NODE_RELEASE_API_FALLBACK:-https://gitea.jmsu.top/api/v1/repos/${OPENCLAW_GITEA_REPO}/releases/tags/node-bins}"' "$ENV_SCRIPT" || fail "installer should use Gitea release API fallback"
+grep -Fq 'NODE_RELEASE_PAGE_FALLBACK="${NODE_RELEASE_PAGE_FALLBACK:-https://gitea.jmsu.top/${OPENCLAW_GITEA_REPO}/releases/tag/node-bins}"' "$ENV_SCRIPT" || fail "installer should expose Gitea release page fallback"
+grep -Fq 'for release_api in "$NODE_RELEASE_API" "$NODE_RELEASE_API_FALLBACK"; do' "$ENV_SCRIPT" || fail "installer should try GitHub release API before Gitea fallback API"
 grep -Fq 'oc_select_node_release_asset_url' "$ENV_SCRIPT" || fail "installer should dynamically select ARM64 musl asset"
 grep -Fq 'oc_node_requires_opt_compat "$NODE_BIN"' "$ENV_SCRIPT" || fail "installer should detect legacy opt-bound ARM64 musl node assets"
 grep -Fq 'oc_ensure_opt_compat_link "$OC_ROOT"' "$ENV_SCRIPT" || fail "installer should create /opt compatibility symlink for legacy assets"
-grep -Fq 'mirror_list="${NODE_SELF_HOST}/${musl_tarball}"' "$ENV_SCRIPT" || fail "installer should default ARM64 musl downloads to direct release asset URL"
+grep -Fq 'mirror_list="${NODE_SELF_HOST}/${musl_tarball} ${NODE_SELF_HOST_FALLBACK}/${musl_tarball}"' "$ENV_SCRIPT" || fail "installer should try GitHub node-bins URL before Gitea mirror URL"
 grep -Fq 'arm64_musl_url=$(resolve_arm64_musl_node_url "$node_ver" 2>/dev/null || true)' "$ENV_SCRIPT" || fail "installer should keep API-based ARM64 musl asset discovery as fallback"
 grep -Fq 'while IFS= read -r d; do' "$ENV_SCRIPT" || fail "installer should traverse OpenClaw entry candidates without a pipeline subshell"
 if grep -Fq 'echo "$search_dirs" | while read -r d; do' "$ENV_SCRIPT"; then
@@ -120,9 +115,13 @@ if bad:
     raise SystemExit(1)
 PY
 
-grep -Fq 'local GITHUB_REPO = "10000ge10000/luci-app-openclaw"' "$CONTROLLER_SCRIPT" || fail "controller should default to upstream repo"
-grep -Fq 'local GITHUB_RELEASES_URL = "https://github.com/" .. GITHUB_REPO .. "/releases"' "$CONTROLLER_SCRIPT" || fail "controller should derive release URLs from upstream repo"
-grep -Fq 'local GITHUB_API_RELEASES_URL = "https://api.github.com/repos/" .. GITHUB_REPO .. "/releases"' "$CONTROLLER_SCRIPT" || fail "controller should derive API URLs from upstream repo"
+grep -Fq 'local GITHUB_REPO = "hotwa/luci-app-openclaw"' "$CONTROLLER_SCRIPT" || fail "controller should default to hotwa repo"
+grep -Fq 'local GITHUB_RELEASES_URL = "https://github.com/" .. GITHUB_REPO .. "/releases"' "$CONTROLLER_SCRIPT" || fail "controller should derive release URLs from hotwa repo"
+grep -Fq 'local GITHUB_API_RELEASES_URL = "https://api.github.com/repos/" .. GITHUB_REPO .. "/releases"' "$CONTROLLER_SCRIPT" || fail "controller should derive API URLs from hotwa repo"
+grep -Fq 'local GITEA_REPO = "group/luci-app-openclaw"' "$CONTROLLER_SCRIPT" || fail "controller should use group Gitea mirror repo"
+grep -Fq "URLS='%s %s'; " "$CONTROLLER_SCRIPT" || fail "plugin upgrade should build ordered fallback URL lists"
+grep -Fq 'run_url_github, run_url_gitea' "$CONTROLLER_SCRIPT" || fail "plugin upgrade should try GitHub run asset before Gitea mirror"
+grep -Fq 'apk_url_github, apk_url_gitea, apk_legacy_url_github, apk_legacy_url_gitea' "$CONTROLLER_SCRIPT" || fail "plugin upgrade should try GitHub apk assets before Gitea mirror"
 grep -Fq 'export NPM_CONFIG_PREFIX="$OC_GLOBAL"' "$PROFILE_SCRIPT" || fail "shell profile should export npm prefix into custom install root"
 grep -Fq 'export NPM_CONFIG_CACHE="${OC_DATA}/.npm"' "$PROFILE_SCRIPT" || fail "shell profile should export npm cache into custom data root"
 grep -Fq 'export XDG_CACHE_HOME="${OC_DATA}/.cache"' "$PROFILE_SCRIPT" || fail "shell profile should export cache home into custom data root"
@@ -132,7 +131,7 @@ grep -Fq 'XDG_CACHE_HOME="${OC_DATA}/.cache" \' "$INIT_SCRIPT" || fail "service 
 grep -Fq 'NPM_CONFIG_PREFIX: OC_GLOBAL' "$WEB_PTY_SCRIPT" || fail "web PTY environment should pass npm prefix into custom install root"
 grep -Fq 'NPM_CONFIG_CACHE: `${OC_DATA}/.npm`' "$WEB_PTY_SCRIPT" || fail "web PTY environment should pass npm cache into custom data root"
 grep -Fq 'COREPACK_HOME: `${OC_DATA}/.cache/corepack`' "$WEB_PTY_SCRIPT" || fail "web PTY environment should pass corepack cache into custom data root"
-grep -Fq "https://gitea.jmsu.top/lingyuzeng/luci-app-openclaw/releases/tag/v" "$BASIC_LUA" || fail "UI should link manual download to gitea release page"
+grep -Fq "https://gitea.jmsu.top/group/luci-app-openclaw/releases/tag/v" "$BASIC_LUA" || fail "UI should link manual download to group gitea release page"
 grep -Fq 'runtime_upgrade' "$CONTROLLER_SCRIPT" || fail "controller should expose a runtime OpenClaw upgrade API"
 grep -Fq 'runtime_upgrade_log' "$CONTROLLER_SCRIPT" || fail "controller should expose runtime OpenClaw upgrade logs"
 grep -Fq 'OPENCLAW_INSTALL_ROOT=' "$CONTROLLER_SCRIPT" || fail "runtime upgrade should pass the derived install root to openclaw-env"
@@ -149,7 +148,7 @@ grep -Fq 'ocPollRuntimeUpgradeLog' "$BASIC_LUA" || fail "UI should poll runtime 
 grep -Fq 'cat /tmp/openclaw-runtime-upgrade.log' "$BASIC_LUA" || fail "UI should show how to inspect runtime upgrade logs after failure"
 grep -Fq 'openclaw@${target_ver}' "$ENV_SCRIPT" || fail "runtime upgrade should support targeting a specific OpenClaw version"
 grep -Fq "ARM64 musl" "$BASIC_LUA" || fail "UI should mention ARM64 musl specific guidance"
-grep -Fq "10000ge10000/luci-app-openclaw" "$BASIC_LUA" || fail "UI should point ARM64 musl guidance at upstream repo"
+grep -Fq "hotwa/luci-app-openclaw" "$BASIC_LUA" || fail "UI should point ARM64 musl guidance at hotwa repo"
 if grep -Fq 'NODE_MIRROR=https://npmmirror.com/mirrors/node openclaw-env setup' "$BASIC_LUA"; then
 	fail "UI should not recommend NODE_MIRROR for ARM64 musl node download failures"
 fi

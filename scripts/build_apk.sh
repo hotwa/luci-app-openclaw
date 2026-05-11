@@ -183,9 +183,9 @@ apk mkpkg \
 	-I "description:OpenClaw AI 网关 LuCI 管理插件" \
 	-I "arch:noarch" \
 	-I "license:GPL-3.0" \
-	-I "origin:https://github.com/10000ge10000/luci-app-openclaw" \
+	-I "origin:https://github.com/hotwa/luci-app-openclaw" \
 	-I "maintainer:10000ge10000 <10000ge10000@users.noreply.github.com>" \
-	-I "url:https://github.com/10000ge10000/luci-app-openclaw" \
+	-I "url:https://github.com/hotwa/luci-app-openclaw" \
 	-I "depends:${APK_DEPENDS}" \
 	-s "post-install:$SCRIPT_APK_DIR/post-install" \
 	-s "post-upgrade:$SCRIPT_APK_DIR/post-upgrade" \

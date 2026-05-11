@@ -5,10 +5,10 @@ local nixio_fs = require "nixio.fs"
 local util = require "luci.util"
 local jsonc = require "luci.jsonc"
 local oc_paths = require "openclaw.paths"
-local GITHUB_REPO = "10000ge10000/luci-app-openclaw"
+local GITHUB_REPO = "hotwa/luci-app-openclaw"
 local GITHUB_RELEASES_URL = "https://github.com/" .. GITHUB_REPO .. "/releases"
 local GITHUB_API_RELEASES_URL = "https://api.github.com/repos/" .. GITHUB_REPO .. "/releases"
-local GITEA_REPO = "lingyuzeng/luci-app-openclaw"
+local GITEA_REPO = "group/luci-app-openclaw"
 local GITEA_RELEASES_URL = "https://gitea.jmsu.top/" .. GITEA_REPO .. "/releases"
 local GITEA_API_RELEASES_URL = "https://gitea.jmsu.top/api/v1/repos/" .. GITEA_REPO .. "/releases"
 
@@ -648,7 +648,7 @@ function action_check_update()
 	local http = require "luci.http"
 	local sys = require "luci.sys"
 
-	-- 插件版本检查 (优先 Gitea API, 失败回退 GitHub API)
+	-- 插件版本检查 (优先 GitHub API, 失败回退 Gitea 镜像)
 	local plugin_current = ""
 	local pf = io.open("/usr/share/openclaw/VERSION", "r")
 		or io.open("/root/luci-app-openclaw/VERSION", "r")
@@ -662,9 +662,8 @@ function action_check_update()
 	local plugin_has_update = false
 
 	local sources = {
-		-- 国内网络优先走 Gitea 镜像，失败时回退 GitHub
-		{ api = GITEA_API_RELEASES_URL, releases = GITEA_RELEASES_URL },
 		{ api = GITHUB_API_RELEASES_URL, releases = GITHUB_RELEASES_URL },
+		{ api = GITEA_API_RELEASES_URL, releases = GITEA_RELEASES_URL },
 	}
 
 	for _, source in ipairs(sources) do
@@ -777,7 +776,7 @@ function action_plugin_upgrade()
 	sys.exec("rm -f /tmp/openclaw-plugin-upgrade.log /tmp/openclaw-plugin-upgrade.pid /tmp/openclaw-plugin-upgrade.exit")
 
 	-- 后台执行:
-	-- 1) 优先下载 Gitea 镜像 (失败回退 GitHub)
+	-- 1) 优先下载 GitHub Release (失败回退 Gitea 镜像)
 	-- 2) 若系统存在 apk, 优先尝试 .apk 安装 (失败回退 .run)
 	local run_url_gitea = GITEA_RELEASES_URL .. "/download/v" .. version .. "/luci-app-openclaw_" .. version .. ".run"
 	local run_url_github = GITHUB_RELEASES_URL .. "/download/v" .. version .. "/luci-app-openclaw_" .. version .. ".run"
@@ -864,10 +863,10 @@ function action_plugin_upgrade()
 		"fi " ..
 		") & echo $! > /tmp/openclaw-plugin-upgrade.pid",
 		version,
-		run_url_gitea, run_url_github,
-		apk_url_gitea, apk_url_github, apk_legacy_url_gitea, apk_legacy_url_github, run_url_gitea, run_url_github,
+		run_url_github, run_url_gitea,
+		apk_url_github, apk_url_gitea, apk_legacy_url_github, apk_legacy_url_gitea, run_url_github, run_url_gitea,
 		GITEA_RELEASES_URL .. "/tag/v" .. version,
-		run_url_gitea, run_url_github
+		run_url_github, run_url_gitea
 	))
 
 	http.prepare_content("application/json")
