@@ -4,6 +4,15 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [2026.6.10] - 2026-06-30
+
+### 维护
+
+- **OpenClaw 稳定版同步**: 按 hotwa 的 `YYYY.M.D` 发布命名，将默认运行时目标更新为 `2026.6.10`
+- **Node.js 最低要求同步**: 适配 OpenClaw 2026.6.x 的 `engines.node >=22.19.0`，安装、升级和服务启动时都会拒绝过低 Node.js 版本
+- **ARM64 musl 策略保留**: 保留 hotwa `node-bins` 中已发布的 Node.js `24.14.1` V2 资产和 GitHub/Gitea fallback，不切换到上游 `2.0.6` 的 `22.22.2` 命名线
+- **默认安装更稳健**: 未显式传入 `OC_VERSION` 时安装已测试稳定版；需要跟随 npm `latest` 时仍可显式设置 `OC_VERSION=latest`
+
 ## [2.0.7] - 2026-04-20
 
 ### 修复

@@ -69,6 +69,30 @@ oc_read_node_version() {
 	oc_normalize_node_version "$version"
 }
 
+oc_assert_node_min_version() {
+	local node_bin="${1:-}"
+	local required="${2:-}"
+	local current
+
+	current=$(oc_read_node_version "$node_bin") || {
+		echo "  [✗] Node.js 不可执行或无法读取版本: $node_bin"
+		return 1
+	}
+	oc_normalize_node_version "$required" >/dev/null || {
+		echo "  [✗] Node.js 最低版本要求无效: $required"
+		return 1
+	}
+
+	if ! oc_node_version_ge "$current" "$required"; then
+		echo "  [✗] Node.js v${current} 低于 OpenClaw 要求 v${required}"
+		echo "  [!] 请重新运行 openclaw-env node 或 openclaw-env setup 更新运行时"
+		return 1
+	fi
+
+	echo "  [✓] Node.js v${current} 满足要求 (>= v${required})"
+	return 0
+}
+
 oc_node_requires_opt_compat() {
 	local node_bin="${1:-}"
 

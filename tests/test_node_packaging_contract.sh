@@ -39,7 +39,17 @@ grep -Fq 'verify_prefix /tmp/custom-openclaw-root/openclaw/node' "$WORKFLOW" || 
 grep -Fq 'oc_node_version_ge "$installed_ver" "$node_ver"' "$ENV_SCRIPT" || fail "installer should enforce minimum node version after extraction"
 grep -Fq 'NODE_VERSION_V2="24.14.1"' "$ENV_SCRIPT" || fail "installer should default V2 to Node.js 24.14.1"
 APP_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
+[ "$APP_VERSION" = "2026.6.10" ] || fail "package VERSION should track hotwa OpenClaw release naming"
+grep -Fq "## [${APP_VERSION}]" "$REPO_ROOT/CHANGELOG.md" || fail "changelog should include the hotwa release version used by VERSION"
 grep -Fq "OC_TESTED_VERSION=\"$APP_VERSION\"" "$ENV_SCRIPT" || fail "stable OpenClaw runtime target should match package VERSION"
+grep -Fq 'OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-22.19.0}"' "$ENV_SCRIPT" || fail "installer should pin OpenClaw 2026.6.x minimum Node.js version"
+grep -Fq 'OC_VERSION  — 指定 OpenClaw 版本 (如 2026.6.10)，不设置则安装已测试稳定版' "$ENV_SCRIPT" || fail "installer usage should describe pinned stable installs"
+grep -Fq 'oc_pkg="openclaw@${OC_TESTED_VERSION}"' "$ENV_SCRIPT" || fail "fresh setup should install the tested stable OpenClaw version by default"
+grep -Fq 'target_pkg="openclaw@${OC_TESTED_VERSION}"' "$ENV_SCRIPT" || fail "runtime upgrade should target the tested stable OpenClaw version by default"
+grep -Fq 'assert_node_runtime "$node_ver"' "$ENV_SCRIPT" || fail "installer should validate Node.js against OpenClaw runtime minimums"
+grep -Fq '. /usr/libexec/openclaw-node.sh' "$INIT_SCRIPT" || fail "init script should load Node.js version helpers"
+grep -Fq 'OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-22.19.0}"' "$INIT_SCRIPT" || fail "init script should pin OpenClaw 2026.6.x minimum Node.js version"
+grep -Fq 'oc_assert_node_min_version "$NODE_BIN" "$OC_NODE_MIN_VERSION"' "$INIT_SCRIPT" || fail "service start should reject Node.js below OpenClaw runtime minimum"
 grep -Fq "description: 'Build V2 (24.14.1) - Current LTS version'" "$WORKFLOW" || fail "workflow should describe V2 as Node.js 24.14.1 LTS"
 grep -Fq 'NODE_VER="24.14.1"' "$WORKFLOW" || fail "workflow should request Node.js 24.14.1 for V2"
 grep -Fq 'Build Node.js V2 ARM64 musl (apk lts mode)' "$WORKFLOW" || fail "workflow should build V2 in apk lts mode"
@@ -99,7 +109,9 @@ grep -Fq 'openclaw/paths.lua' "$BUILD_RUN" || fail "run builder should package L
 grep -Fq 'Build .apk package' "$MAIN_WORKFLOW" || fail "main workflow should build apk package"
 grep -Fq 'dist/*.apk' "$MAIN_WORKFLOW" || fail "main workflow should publish apk artifact"
 
-python - "$ENV_SCRIPT" "$PROFILE_SCRIPT" "$UCI_DEFAULTS_SCRIPT" "$INIT_SCRIPT" "$PATHS_HELPER" "$NODE_HELPER" "$BUILD_IPK" "$BUILD_RUN" "$BUILD_APK" "$BUILD_SCRIPT" <<'PY' || fail "shell-oriented source files must use LF line endings"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "python3 is required for line ending checks"
+"$PYTHON_BIN" - "$ENV_SCRIPT" "$PROFILE_SCRIPT" "$UCI_DEFAULTS_SCRIPT" "$INIT_SCRIPT" "$PATHS_HELPER" "$NODE_HELPER" "$BUILD_IPK" "$BUILD_RUN" "$BUILD_APK" "$BUILD_SCRIPT" <<'PY' || fail "shell-oriented source files must use LF line endings"
 from pathlib import Path
 import sys
 

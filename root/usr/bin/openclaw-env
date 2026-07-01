@@ -7,7 +7,7 @@
 #   openclaw-env upgrade   — 升级 OpenClaw 到最新版
 #   openclaw-env node      — 仅下载/更新 Node.js
 # 环境变量:
-#   OC_VERSION  — 指定 OpenClaw 版本 (如 2026.3.1)，不设置则安装最新版
+#   OC_VERSION  — 指定 OpenClaw 版本 (如 2026.6.10)，不设置则安装已测试稳定版
 # ============================================================================
 set -e
 
@@ -23,7 +23,9 @@ NODE_VERSION_V1="22.15.1"
 # 默认使用 V2 版本 (可通过 NODE_VERSION 环境变量覆盖)
 NODE_VERSION="${NODE_VERSION:-${NODE_VERSION_V2}}"
 # 经过验证的 OpenClaw 稳定版本 (更新此值需同步测试)
-OC_TESTED_VERSION="2026.5.7"
+OC_TESTED_VERSION="2026.6.10"
+# OpenClaw 2026.6.x package.json engines.node 的最低要求。
+OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-22.19.0}"
 # 用户可通过 OC_VERSION 环境变量覆盖安装版本
 OC_VERSION="${OC_VERSION:-}"
 oc_load_paths "$OPENCLAW_INSTALL_ROOT"
@@ -199,6 +201,43 @@ EOF
 	return 1
 }
 
+detect_oc_node_requirement() {
+	local oc_entry pkg_json required
+	oc_entry=$(find_oc_entry)
+	[ -n "$oc_entry" ] || return 1
+	pkg_json="$(dirname "$oc_entry")/package.json"
+	[ -f "$pkg_json" ] || return 1
+	[ -x "$NODE_BIN" ] || return 1
+
+	required=$(OC_PKG_JSON="$pkg_json" "$NODE_BIN" -e "
+const fs=require('fs');
+try{
+  const pkg=JSON.parse(fs.readFileSync(process.env.OC_PKG_JSON,'utf8'));
+  const spec=(pkg.engines&&pkg.engines.node)||'';
+  const m=String(spec).match(/([0-9]+\\.[0-9]+\\.[0-9]+)/);
+  if(m) process.stdout.write(m[1]);
+}catch(e){}
+" 2>/dev/null)
+	[ -n "$required" ] || return 1
+	printf '%s\n' "$required"
+}
+
+assert_node_runtime() {
+	local required="${1:-$OC_NODE_MIN_VERSION}"
+	local from_pkg
+
+	if ! oc_node_version_ge "$required" "$OC_NODE_MIN_VERSION"; then
+		required="$OC_NODE_MIN_VERSION"
+	fi
+
+	from_pkg=$(detect_oc_node_requirement 2>/dev/null || true)
+	if [ -n "$from_pkg" ] && oc_node_version_ge "$from_pkg" "$required"; then
+		required="$from_pkg"
+	fi
+
+	oc_assert_node_min_version "$NODE_BIN" "$required" || exit 1
+}
+
 detect_arch() {
 	local arch
 	arch=$(uname -m)
@@ -231,10 +270,12 @@ download_node() {
 		current_ver=$(oc_read_node_version "$NODE_BIN" || true)
 		if [ -n "$current_ver" ] && [ "$current_ver" = "$node_ver" ]; then
 			log_info "Node.js v${node_ver} 已安装, 跳过下载"
+			assert_node_runtime "$node_ver"
 			return 0
 		fi
 		if [ -n "$current_ver" ] && oc_node_version_ge "$current_ver" "$node_ver"; then
 			log_info "Node.js v${current_ver} 已安装 (满足 >= v${node_ver}), 跳过下载"
+			assert_node_runtime "$node_ver"
 			return 0
 		fi
 		if [ -n "$current_ver" ]; then
@@ -346,6 +387,7 @@ download_node() {
 	installed_ver=$(oc_read_node_version "$NODE_BIN" || true)
 	if [ -n "$installed_ver" ] && oc_node_version_ge "$installed_ver" "$node_ver"; then
 		log_info "Node.js ${installed_ver} 安装成功"
+		assert_node_runtime "$node_ver"
 		return 0
 	fi
 
@@ -357,6 +399,7 @@ download_node() {
 			if [ -n "$installed_ver" ] && oc_node_version_ge "$installed_ver" "$node_ver"; then
 				log_warn "已启用兼容链接: /opt/openclaw -> ${OC_ROOT}"
 				log_info "Node.js ${installed_ver} 安装成功"
+				assert_node_runtime "$node_ver"
 				return 0
 			fi
 		else
@@ -403,12 +446,15 @@ install_openclaw() {
 
 	# 确定安装版本
 	local oc_pkg="openclaw"
-	if [ -n "$OC_VERSION" ]; then
+	if [ -z "$OC_VERSION" ] || [ "$OC_VERSION" = "stable" ]; then
+		oc_pkg="openclaw@${OC_TESTED_VERSION}"
+		log_info "默认稳定版: v${OC_TESTED_VERSION}"
+	elif [ "$OC_VERSION" = "latest" ]; then
+		oc_pkg="openclaw@latest"
+		log_info "安装 npm latest 稳定标签版本"
+	else
 		oc_pkg="openclaw@${OC_VERSION}"
 		log_info "指定版本: v${OC_VERSION}"
-	else
-		oc_pkg="openclaw@latest"
-		log_info "安装最新版本"
 	fi
 
 	local libc_type
@@ -466,6 +512,7 @@ install_openclaw() {
 
 	if [ -n "$oc_ver" ]; then
 		log_info "OpenClaw v${oc_ver} 安装成功"
+		assert_node_runtime "$OC_NODE_MIN_VERSION"
 	else
 		log_error "OpenClaw 安装验证失败"
 		exit 1
@@ -533,6 +580,7 @@ do_setup() {
 		echo "  如需升级，请使用: openclaw-env upgrade"
 		echo "  如需重装，请先卸载: 在 LuCI 界面点击「卸载环境」"
 		echo ""
+		assert_node_runtime "$OC_NODE_MIN_VERSION"
 		oc_apply_runtime_compat || true
 		exit 0
 	fi
@@ -543,10 +591,12 @@ do_setup() {
 	echo ""
 	echo "  架构:       $(uname -m)"
 	echo "  Node 版本:  v${node_ver}"
-	if [ -n "$OC_VERSION" ]; then
-		echo "  OpenClaw:   v${OC_VERSION} (稳定版)"
+	if [ -z "$OC_VERSION" ] || [ "$OC_VERSION" = "stable" ]; then
+		echo "  OpenClaw:   v${OC_TESTED_VERSION} (默认稳定版)"
+	elif [ "$OC_VERSION" = "latest" ]; then
+		echo "  OpenClaw:   latest (npm 稳定标签)"
 	else
-		echo "  OpenClaw:   最新版"
+		echo "  OpenClaw:   v${OC_VERSION} (指定版本)"
 	fi
 	echo "  安装路径:   ${NODE_BASE}"
 	echo "  数据路径:   ${OC_DATA}"
@@ -626,6 +676,7 @@ do_upgrade() {
 		log_error "Node.js 未安装, 请先运行: openclaw-env setup"
 		exit 1
 	fi
+	assert_node_runtime "$OC_NODE_MIN_VERSION"
 
 	# 获取当前版本
 	local current_ver=""
@@ -639,13 +690,19 @@ do_upgrade() {
 
 	echo "  Node.js:     v${installed_node_ver}"
 	[ -n "$current_ver" ] && echo "  当前版本:    v${current_ver}"
-	local target_ver="${OC_VERSION:-}"
-	local oc_pkg="openclaw@latest"
-	if [ -n "$target_ver" ]; then
-		oc_pkg="openclaw@${target_ver}"
-		echo "  目标版本:    v${target_ver}"
-	else
+	local target_ver="$OC_TESTED_VERSION"
+	local target_pkg="openclaw@${OC_TESTED_VERSION}"
+	if [ "$OC_VERSION" = "latest" ]; then
+		target_ver="latest"
+		target_pkg="openclaw@latest"
+	elif [ -n "$OC_VERSION" ] && [ "$OC_VERSION" != "stable" ]; then
+		target_ver="$OC_VERSION"
+		target_pkg="openclaw@${target_ver}"
+	fi
+	if [ "$target_ver" = "latest" ]; then
 		echo "  目标版本:    latest"
+	else
+		echo "  目标版本:    v${target_ver}"
 	fi
 	echo ""
 
@@ -657,7 +714,7 @@ do_upgrade() {
 	echo "=== 正在升级 OpenClaw ==="
 	echo ""
 	ensure_runtime_cache_dirs
-	"$NPM_BIN" install -g "$oc_pkg" --prefix="$OC_GLOBAL" $install_flags 2>&1
+	"$NPM_BIN" install -g "$target_pkg" --prefix="$OC_GLOBAL" $install_flags 2>&1
 	oc_apply_runtime_compat || true
 
 	# 验证升级结果
@@ -672,6 +729,7 @@ do_upgrade() {
 
 	echo ""
 	if [ -n "$new_ver" ]; then
+		assert_node_runtime "$OC_NODE_MIN_VERSION"
 		if [ "$current_ver" = "$new_ver" ]; then
 			log_info "当前已是最新版本 v${new_ver}"
 		else
@@ -807,6 +865,7 @@ do_setup_offline() {
 		offline_node_ver=$(oc_read_node_version "$NODE_BIN" || true)
 		if [ -n "$offline_node_ver" ]; then
 			log_info "Node.js v${offline_node_ver} 安装成功"
+			assert_node_runtime "$OC_NODE_MIN_VERSION"
 		else
 			log_error "Node.js 安装失败"
 			exit 1
@@ -831,6 +890,7 @@ do_setup_offline() {
 		if [ -n "$oc_entry" ]; then
 			local oc_ver=$("$NODE_BIN" "$oc_entry" --version 2>/dev/null | tr -d '[:space:]')
 			log_info "OpenClaw v${oc_ver} 安装成功"
+			assert_node_runtime "$OC_NODE_MIN_VERSION"
 		else
 			log_error "OpenClaw 安装验证失败"
 			exit 1

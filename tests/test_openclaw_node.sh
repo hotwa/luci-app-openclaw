@@ -44,11 +44,36 @@ exit 127
 EOF
 chmod +x "$tmpdir/node-bad"
 
+cat > "$tmpdir/node-min-ok" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+	echo "v22.19.0"
+	exit 0
+fi
+exit 1
+EOF
+chmod +x "$tmpdir/node-min-ok"
+
+cat > "$tmpdir/node-min-low" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+	echo "v22.18.1"
+	exit 0
+fi
+exit 1
+EOF
+chmod +x "$tmpdir/node-min-low"
+
 read_ver=$(oc_read_node_version "$tmpdir/node-ok") || fail "read runnable node version"
 [ "$read_ver" = "22.16.2" ] || fail "read version value"
 
 if oc_read_node_version "$tmpdir/node-bad" >/dev/null 2>&1; then
 	fail "broken node binary should not be accepted"
+fi
+
+oc_assert_node_min_version "$tmpdir/node-min-ok" "22.19.0" >/dev/null || fail "exact minimum Node.js version should be accepted"
+if oc_assert_node_min_version "$tmpdir/node-min-low" "22.19.0" >/dev/null 2>&1; then
+	fail "Node.js below OpenClaw minimum should be rejected"
 fi
 
 cat > "$tmpdir/node-legacy-opt" <<'EOF'

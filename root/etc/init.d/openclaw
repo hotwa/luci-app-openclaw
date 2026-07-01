@@ -12,7 +12,9 @@ EXTRA_HELP="    setup            下载 Node.js 并安装 OpenClaw
 
 . /usr/libexec/openclaw-paths.sh
 oc_load_paths "$OPENCLAW_INSTALL_ROOT"
+. /usr/libexec/openclaw-node.sh
 . /usr/libexec/openclaw-compat.sh
+OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-22.19.0}"
 
 # ── OverlayFS 兼容性修复 ──
 # Docker bind mount (/overlay/upper/opt/docker) 会导致 /opt 不可写
@@ -183,6 +185,11 @@ chown -R openclaw:openclaw "${OC_DATA}/.npm" "${OC_DATA}/.cache" "${OC_DATA}/tmp
 if [ ! -x "$NODE_BIN" ]; then
 echo "未找到 Node.js: $NODE_BIN"
 echo "请运行: openclaw-env setup"
+return 1
+fi
+if ! oc_assert_node_min_version "$NODE_BIN" "$OC_NODE_MIN_VERSION" >/dev/null; then
+echo "Node.js 版本过低，OpenClaw 需要 >= v${OC_NODE_MIN_VERSION}"
+echo "请运行: openclaw-env node"
 return 1
 fi
 
