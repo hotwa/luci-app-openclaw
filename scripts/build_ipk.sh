@@ -57,7 +57,8 @@ cp "$PKG_DIR/root/usr/libexec/openclaw-paths.sh" "$DATA_DIR/usr/libexec/"
 cp "$PKG_DIR/root/usr/libexec/openclaw-node.sh" "$DATA_DIR/usr/libexec/"
 cp "$PKG_DIR/root/usr/libexec/openclaw-compat.sh" "$DATA_DIR/usr/libexec/"
 cp "$PKG_DIR/root/usr/libexec/openclaw-wechat.sh" "$DATA_DIR/usr/libexec/"
-chmod +x "$DATA_DIR/usr/libexec/openclaw-paths.sh" "$DATA_DIR/usr/libexec/openclaw-node.sh" "$DATA_DIR/usr/libexec/openclaw-compat.sh" "$DATA_DIR/usr/libexec/openclaw-wechat.sh"
+cp "$PKG_DIR/root/usr/libexec/openclaw-permissions.sh" "$DATA_DIR/usr/libexec/"
+chmod +x "$DATA_DIR/usr/libexec/openclaw-paths.sh" "$DATA_DIR/usr/libexec/openclaw-node.sh" "$DATA_DIR/usr/libexec/openclaw-compat.sh" "$DATA_DIR/usr/libexec/openclaw-wechat.sh" "$DATA_DIR/usr/libexec/openclaw-permissions.sh"
 
 # LuCI controller
 mkdir -p "$DATA_DIR/usr/lib/lua/luci/controller"
@@ -75,12 +76,18 @@ cp "$PKG_DIR/luasrc/model/cbi/openclaw/"*.lua "$DATA_DIR/usr/lib/lua/luci/model/
 mkdir -p "$DATA_DIR/usr/lib/lua/luci/view/openclaw"
 cp "$PKG_DIR/luasrc/view/openclaw/"*.htm "$DATA_DIR/usr/lib/lua/luci/view/openclaw/"
 
+# rpcd ACL
+mkdir -p "$DATA_DIR/usr/share/rpcd/acl.d"
+cp "$PKG_DIR/root/usr/share/rpcd/acl.d/"*.json "$DATA_DIR/usr/share/rpcd/acl.d/"
+
 # oc-config assets
 mkdir -p "$DATA_DIR/usr/share/openclaw"
 cp "$PKG_DIR/VERSION" "$DATA_DIR/usr/share/openclaw/VERSION"
 cp "$PKG_DIR/root/usr/share/openclaw/oc-config.sh" "$DATA_DIR/usr/share/openclaw/"
 chmod +x "$DATA_DIR/usr/share/openclaw/oc-config.sh"
 cp "$PKG_DIR/root/usr/share/openclaw/"*.js "$DATA_DIR/usr/share/openclaw/"
+# 精选模型预设 (shell 与 JS 共读的唯一数据源)
+cp "$PKG_DIR/root/usr/share/openclaw/model-presets.json" "$DATA_DIR/usr/share/openclaw/"
 
 # Web PTY UI
 cp -r "$PKG_DIR/root/usr/share/openclaw/ui" "$DATA_DIR/usr/share/openclaw/"
@@ -90,16 +97,12 @@ mkdir -p "$DATA_DIR/etc/profile.d"
 cp "$PKG_DIR/root/etc/profile.d/openclaw.sh" "$DATA_DIR/etc/profile.d/"
 chmod +x "$DATA_DIR/etc/profile.d/openclaw.sh"
 
-# i18n (po2lmo 可选)
-mkdir -p "$DATA_DIR/usr/lib/lua/luci/i18n"
-if command -v po2lmo >/dev/null 2>&1 && [ -f "$PKG_DIR/po/zh-cn/openclaw.po" ]; then
-	po2lmo "$PKG_DIR/po/zh-cn/openclaw.po" "$DATA_DIR/usr/lib/lua/luci/i18n/openclaw.zh-cn.lmo" 2>/dev/null || true
-fi
-
 # 计算安装大小
 INSTALLED_SIZE=$(du -sk "$DATA_DIR" | awk '{print $1}')
 
-(cd "$DATA_DIR" && tar czf "$STAGING/data.tar.gz" .)
+# 强制 data.tar.gz 内文件归属为 root:root，避免 GitHub runner / 本地构建用户
+# 的 UID/GID 泄漏到用户机器（例如安装后出现 1001:1001）。
+(cd "$DATA_DIR" && tar --owner=0 --group=0 --numeric-owner -czf "$STAGING/data.tar.gz" .)
 
 # ── 构建 control.tar.gz ──
 CTRL_DIR="$STAGING/control"
@@ -168,6 +171,30 @@ cat > "$CTRL_DIR/postinst" << 'EOF'
 	# 执行 uci-defaults 初始化脚本
 	if [ -f /etc/uci-defaults/99-openclaw ]; then
 		( . /etc/uci-defaults/99-openclaw ) && rm -f /etc/uci-defaults/99-openclaw
+	fi
+
+	# 升级时只修复 OpenClaw 状态中的权限，不覆盖 OC_DATA 或插件配置。
+	OPENCLAW_INSTALL_BASE="$(uci -q get openclaw.main.install_path 2>/dev/null || uci -q get openclaw.main.install_root 2>/dev/null || echo /opt)"
+	if [ -r /usr/libexec/openclaw-paths.sh ]; then
+		. /usr/libexec/openclaw-paths.sh
+		oc_load_paths "$OPENCLAW_INSTALL_BASE" 2>/dev/null || true
+	fi
+	if [ -n "${OC_DATA:-}" ] && [ -x /usr/libexec/openclaw-permissions.sh ]; then
+		/usr/libexec/openclaw-permissions.sh fix-state "${OC_DATA}/.openclaw" >/dev/null 2>&1 || true
+	fi
+	# Package extraction can inherit unexpected ownership from the build host;
+	# repair only files owned by this package, never OC_DATA or its user state.
+	for system_path in \
+		/etc/config/openclaw /etc/init.d/openclaw /etc/profile.d/openclaw.sh \
+		/usr/bin/openclaw-env /usr/libexec/openclaw-paths.sh \
+		/usr/libexec/openclaw-node.sh /usr/libexec/openclaw-compat.sh \
+		/usr/libexec/openclaw-wechat.sh /usr/libexec/openclaw-permissions.sh
+	do
+		[ -e "$system_path" ] && chown -R root:root "$system_path" 2>/dev/null || true
+	done
+	if [ "$(uci -q get openclaw.main.enabled 2>/dev/null || echo 0)" = "1" ] && [ -x /etc/init.d/openclaw ]; then
+		/etc/init.d/openclaw enable >/dev/null 2>&1 || true
+		/etc/init.d/openclaw start >/dev/null 2>&1 || true
 	fi
 
 	# 清理 LuCI 缓存

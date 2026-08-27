@@ -23,11 +23,6 @@ on:
         required: false
         type: boolean
         default: true
-      upload_openlist:
-        description: '是否上传到 OpenList 网盘'
-        required: false
-        type: boolean
-        default: false
 
 jobs:
   build:
@@ -92,6 +87,15 @@ jobs:
           echo "Node.js: v${NODE_VER}"
           echo "OpenClaw: v${OC_VER}"
 
+      - name: Run contract tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lua5.1
+          # 用 runner 统一执行 tests/ 下全部测试。
+          # 原先逐个列出测试文件，新增测试很容易漏进 CI ——
+          # 护栏建好了却不阻断发布，等于没建。
+          sh tests/run_all.sh
+
       - name: Build .run installer (online)
         run: |
           chmod +x scripts/build_run.sh
@@ -144,7 +148,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: luci-app-openclaw-${{ steps.version.outputs.version }}
-          path: dist/*
+          path: |
+            dist/*.run
+            dist/*.ipk
+            dist/*.tar.xz
           retention-days: 30
           compression-level: 0
 

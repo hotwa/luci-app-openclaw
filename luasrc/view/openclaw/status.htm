@@ -104,6 +104,8 @@
 					stEl.innerHTML = '<span class="oc-badge oc-badge-failed">启动失败</span>';
 				} else if (d.gateway_starting) {
 					stEl.innerHTML = '<span class="oc-badge oc-badge-starting">⏳ 正在启动...</span>';
+				} else if (d.gateway_failed) {
+					stEl.innerHTML = '<span class="oc-badge oc-badge-failed">启动失败</span>';
 				} else {
 					stEl.innerHTML = '<span class="oc-badge oc-badge-stopped">已停止</span>';
 				}
@@ -115,7 +117,9 @@
 					var exitText = d.gateway_exit_code ? (' (exit ' + d.gateway_exit_code + ')') : '';
 					gwEl.innerHTML = '<span class="oc-dot oc-dot-red"></span>最近启动失败，请查看日志' + exitText;
 				} else if (d.gateway_starting) {
-					gwEl.innerHTML = '<span class="oc-dot oc-dot-gray"></span>初始化中，首次启动可能需要 2~5 分钟...';
+					gwEl.innerHTML = '<span class="oc-dot oc-dot-gray"></span>初始化中，通常 20~40 秒；首次安装或负载较高时会更久...';
+				} else if (d.gateway_failed) {
+					gwEl.innerHTML = '<span class="oc-dot oc-dot-red"></span>启动失败，退出码 ' + (d.gateway_exit_code || '-');
 				} else {
 					gwEl.innerHTML = '<span class="oc-dot oc-dot-red"></span>未监听';
 				}

@@ -7,7 +7,7 @@
 #   openclaw-env upgrade   — 升级 OpenClaw 到最新版
 #   openclaw-env node      — 仅下载/更新 Node.js
 # 环境变量:
-#   OC_VERSION  — 指定 OpenClaw 版本 (如 2026.6.10)，不设置则安装已测试稳定版
+#   OC_VERSION  — 指定 OpenClaw 版本 (如 2026.7.1)，不设置则安装已测试稳定版
 # ============================================================================
 set -e
 
@@ -18,14 +18,14 @@ set -e
 # ── Node.js 版本策略 ──
 # V2: 当前推荐版本，用于 OpenClaw v2026.3.11+ (默认下载 24.14.1，满足 >= 22.16.0)
 # V1: 保留给显式指定旧版环境时使用，不再作为 V2 的自动回退
-NODE_VERSION_V2="24.14.1"
+NODE_VERSION_V2="22.23.2"
 NODE_VERSION_V1="22.15.1"
 # 默认使用 V2 版本 (可通过 NODE_VERSION 环境变量覆盖)
 NODE_VERSION="${NODE_VERSION:-${NODE_VERSION_V2}}"
 # 经过验证的 OpenClaw 稳定版本 (更新此值需同步测试)
-OC_TESTED_VERSION="2026.6.10"
+OC_TESTED_VERSION="2026.7.1-2"
 # OpenClaw 2026.6.x package.json engines.node 的最低要求。
-OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-22.19.0}"
+OC_NODE_MIN_VERSION="${OC_NODE_MIN_VERSION:-22.22.3}"
 # 用户可通过 OC_VERSION 环境变量覆盖安装版本
 OC_VERSION="${OC_VERSION:-}"
 oc_load_paths "$OPENCLAW_INSTALL_ROOT"
@@ -238,6 +238,82 @@ assert_node_runtime() {
 	oc_assert_node_min_version "$NODE_BIN" "$required" || exit 1
 }
 
+detect_oc_node_requirement() {
+	local oc_entry pkg_json required
+	oc_entry=$(find_oc_entry)
+	[ -n "$oc_entry" ] || return 1
+	pkg_json="$(dirname "$oc_entry")/package.json"
+	[ -f "$pkg_json" ] || return 1
+	[ -x "$NODE_BIN" ] || return 1
+
+	required=$(OC_PKG_JSON="$pkg_json" "$NODE_BIN" -e "
+const fs=require('fs');
+try{
+  const pkg=JSON.parse(fs.readFileSync(process.env.OC_PKG_JSON,'utf8'));
+  const spec=(pkg.engines&&pkg.engines.node)||'';
+  const m=String(spec).match(/([0-9]+\\.[0-9]+\\.[0-9]+)/);
+  if(m) process.stdout.write(m[1]);
+}catch(e){}
+" 2>/dev/null)
+	[ -n "$required" ] || return 1
+	printf '%s\n' "$required"
+}
+
+assert_node_runtime() {
+	local required="$OC_NODE_MIN_VERSION"
+	local from_pkg
+	from_pkg=$(detect_oc_node_requirement 2>/dev/null || true)
+	if [ -n "$from_pkg" ] && command -v oc_node_version_ge >/dev/null 2>&1; then
+		if oc_node_version_ge "$from_pkg" "$required"; then
+			required="$from_pkg"
+		fi
+	fi
+
+	if command -v oc_assert_node_min_version >/dev/null 2>&1; then
+		oc_assert_node_min_version "$NODE_BIN" "$required" || exit 1
+	fi
+
+	# OpenClaw CLI 依赖 Unicode property escapes（例如 \p{Extended_Pictographic}）。
+	# ARM64 musl 自托管 Node 包必须带上 NODE_ICU_DATA，否则用户直接执行
+	# `openclaw status` 等子命令会在 CLI 入口阶段抛 SyntaxError。
+	if ! NODE_ICU_DATA="${NODE_BASE}/share/icu" "$NODE_BIN" -e "new RegExp('\\\\p{Extended_Pictographic}','u')" >/dev/null 2>&1; then
+		log_error "Node.js ICU/Unicode 正则能力异常，请重新安装 Node.js 运行时"
+		exit 1
+	fi
+}
+
+install_openclaw_cli_wrapper() {
+	local oc_entry
+	oc_entry=$(find_oc_entry)
+	[ -n "$oc_entry" ] || return 1
+	ensure_mkdir "$OC_GLOBAL/bin"
+	# npm 默认生成的 openclaw 可能是指向 openclaw.mjs 的 symlink。
+	# 写 wrapper 前必须先 unlink，否则重定向会顺着 symlink 覆盖真实 CLI 入口。
+	rm -f "$OC_GLOBAL/bin/openclaw" 2>/dev/null || true
+	# 用 : "${VAR:=default}" 而非 export VAR=... 赋默认值。
+	#
+	# 历史实现无条件 export，把 OpenClaw 官方文档承诺的 per-instance 环境变量
+	# (OPENCLAW_HOME / OPENCLAW_STATE_DIR / OPENCLAW_CONFIG_PATH) 全部覆盖，
+	# 连 `openclaw --profile <name>` 也随之失效 —— profile 会解析回同一份
+	# 生产配置。后果是无法做隔离的写入测试，也无法按官方文档跑多实例网关。
+	#
+	# 现改为"仅当调用方未设置时才填默认值"，默认行为不变，但允许覆盖。
+	cat > "$OC_GLOBAL/bin/openclaw" << EOF
+#!/bin/sh
+# luci-app-openclaw 生成的 OpenClaw CLI 包装器。
+# 只在调用方未提供时设置默认值，保留官方的 per-instance / --profile 隔离能力。
+: "\${HOME:=${OC_DATA}}"
+: "\${OPENCLAW_HOME:=${OC_DATA}}"
+: "\${OPENCLAW_STATE_DIR:=\${OPENCLAW_HOME}/.openclaw}"
+: "\${OPENCLAW_CONFIG_PATH:=\${OPENCLAW_STATE_DIR}/openclaw.json}"
+: "\${NODE_ICU_DATA:=${NODE_BASE}/share/icu}"
+export HOME OPENCLAW_HOME OPENCLAW_STATE_DIR OPENCLAW_CONFIG_PATH NODE_ICU_DATA
+export PATH="${NODE_BASE}/bin:${OC_GLOBAL}/bin:\$PATH"
+exec "${NODE_BIN}" "${oc_entry}" "\$@"
+EOF
+	chmod +x "$OC_GLOBAL/bin/openclaw" 2>/dev/null || true
+}
+
 detect_arch() {
 	local arch
 	arch=$(uname -m)
@@ -255,6 +331,55 @@ detect_arch() {
 			exit 1
 			;;
 	esac
+}
+
+# 计算文件 sha256 (优先 sha256sum，兜底 openssl；openssl-util 是本包硬依赖)
+oc_sum256() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" 2>/dev/null | awk '{print $1}'
+	elif command -v openssl >/dev/null 2>&1; then
+		openssl dgst -sha256 -r "$1" 2>/dev/null | awk '{print $1}'
+	else
+		return 1
+	fi
+}
+
+# 校验 Node tarball 完整性:
+# - 官方 / unofficial-builds / npmmirror 镜像: 拉取同目录 SHASUMS256.txt 比对
+# - 自托管 node-bins: 优先下载同名 .sha256 边车文件; 旧资产没有哈希时降级为体积检查
+# - 哈希源本身不可用时仅告警不阻断 (离线/镜像异常场景仍可继续)
+verify_node_tarball() {
+	local file="$1" mirror_url="$2" filename
+	filename=$(basename "$mirror_url")
+	local actual
+	actual=$(oc_sum256 "$file") || { log_warn "无可用 sha256 工具，跳过完整性校验"; return 0; }
+
+	local expected=""
+	if [ "${mirror_url#*node-bins}" != "$mirror_url" ]; then
+		# 自托管 Release 资产: 尝试 .sha256 边车文件
+		if curl -fsSL --connect-timeout 10 --max-time 30 -o "${file}.sha256" "${mirror_url}.sha256" 2>/dev/null; then
+			expected=$(awk '{print $1}' "${file}.sha256" 2>/dev/null)
+			rm -f "${file}.sha256"
+		fi
+	else
+		# 官方系镜像: 同版本目录下的 SHASUMS256.txt
+		local shasum_url="${mirror_url%/*}/SHASUMS256.txt"
+		if curl -fsSL --connect-timeout 10 --max-time 30 -o "${file}.sums" "$shasum_url" 2>/dev/null; then
+			expected=$(awk -v f="$filename" '$2 == f {print $1}' "${file}.sums" 2>/dev/null)
+			rm -f "${file}.sums"
+		fi
+	fi
+
+	if [ -z "$expected" ]; then
+		log_warn "未获取到 ${filename} 的官方哈希，跳过强校验 (仅体积检查)"
+		return 0
+	fi
+	if [ "$actual" = "$expected" ]; then
+		log_info "SHA256 校验通过"
+		return 0
+	fi
+	log_error "SHA256 校验失败: ${filename}"
+	return 1
 }
 
 download_node() {
@@ -334,8 +459,12 @@ download_node() {
 			# 校验文件大小 (Node.js xz 压缩包至少 5MB; Alpine 精简包约 12MB, 官方完整包约 30MB)
 			local fsize=$(wc -c < "$tmp_file" 2>/dev/null || echo 0)
 			if [ "$fsize" -gt 5000000 ] 2>/dev/null; then
-				downloaded=1
-				break
+				if verify_node_tarball "$tmp_file" "$mirror_url"; then
+					downloaded=1
+					break
+				else
+					rm -f "$tmp_file"
+				fi
 			else
 				log_warn "文件大小异常 (${fsize} bytes), 跳过"
 				rm -f "$tmp_file"
@@ -352,34 +481,33 @@ download_node() {
 
 	# 解压
 	echo "  正在解压到 ${NODE_BASE}..."
+	# 先解压到临时目录并确认完整，再替换 NODE_BASE。
+	# 这样即使 tar/xz 缺失或压缩包损坏，也不会删除已有 Node.js。
+	local tmp_extract="/tmp/node-extract-$$"
+	rm -rf "$tmp_extract" 2>/dev/null
+	ensure_mkdir "$tmp_extract"
+	if ! tar xf "$tmp_file" -C "$tmp_extract" 2>/dev/null; then
+		log_error "Node.js 解压失败，请确认已安装 GNU tar（opkg install tar）且下载文件完整"
+		rm -rf "$tmp_extract"
+		exit 1
+	fi
+	# 找顶层目录 (node-vX.X.X-linux-xxx)
+	local top_dir
+	top_dir=$(ls "$tmp_extract" 2>/dev/null | head -1)
+	if [ -z "$top_dir" ] || [ ! -d "$tmp_extract/$top_dir" ]; then
+		log_error "解压后未找到顶层目录，安装失败"
+		rm -rf "$tmp_extract"
+		exit 1
+	fi
 	# OverlayFS 兼容: rm -rf 后可能因 whiteout 导致 mkdir 失败
-	# 先尝试常规方式，失败则通过 overlay upper 层操作
+	# 只有在临时目录已解压成功后才替换正式 Node 目录。
 	rm -rf "$NODE_BASE" 2>/dev/null
 	if [ -d /overlay/upper ]; then
 		rm -rf "/overlay/upper${NODE_BASE}" 2>/dev/null
 	fi
 	ensure_mkdir "$NODE_BASE"
-	# 兼容 BusyBox tar (不支持 --strip-components) 和 GNU tar
-	# 方法: 先解压到临时目录，再移动顶层子目录内容到目标目录
-	if tar --strip-components=1 -xf "$tmp_file" -C "$NODE_BASE" 2>/dev/null; then
-		: # GNU tar 成功
-	else
-		# BusyBox tar 回退: 解压到临时目录后手动移动
-		local tmp_extract="/tmp/node-extract-$$"
-		ensure_mkdir "$tmp_extract"
-		tar xf "$tmp_file" -C "$tmp_extract"
-		# 找顶层目录 (node-vX.X.X-linux-xxx)
-		local top_dir
-		top_dir=$(ls "$tmp_extract" 2>/dev/null | head -1)
-		if [ -n "$top_dir" ] && [ -d "$tmp_extract/$top_dir" ]; then
-			cp -a "$tmp_extract/$top_dir/." "$NODE_BASE/"
-		else
-			log_error "解压后未找到顶层目录，安装失败"
-			rm -rf "$tmp_extract"
-			exit 1
-		fi
-		rm -rf "$tmp_extract"
-	fi
+	cp -a "$tmp_extract/$top_dir/." "$NODE_BASE/"
+	rm -rf "$tmp_extract"
 	rm -f "$tmp_file"
 
 	# 验证
@@ -511,6 +639,7 @@ install_openclaw() {
 	fi
 
 	if [ -n "$oc_ver" ]; then
+		install_openclaw_cli_wrapper || true
 		log_info "OpenClaw v${oc_ver} 安装成功"
 		assert_node_runtime "$OC_NODE_MIN_VERSION"
 	else
@@ -602,11 +731,23 @@ do_setup() {
 	echo "  数据路径:   ${OC_DATA}"
 	echo ""
 
+	ensure_openclaw_user
+	probe_install_root
+	if [ -e "$OC_INSTALL_PATH" ]; then
+		OC_SETUP_FRESH_ROOT=0
+	else
+		OC_SETUP_FRESH_ROOT=1
+	fi
+	OC_SETUP_CLEANUP=1
+	trap 'rc=$?; if [ $rc -ne 0 ] && [ "${OC_SETUP_CLEANUP:-0}" = "1" ]; then cleanup_partial_install; fi; exit $rc' EXIT
+
 	download_node "$node_ver"
 	install_pnpm
 	install_openclaw
 	oc_apply_runtime_compat || true
 	init_openclaw
+	OC_SETUP_CLEANUP=0
+	trap - EXIT
 
 	echo ""
 	echo "╔══════════════════════════════════════════════════════════════╗"
@@ -840,6 +981,9 @@ do_setup_offline() {
 	echo "  离线包:     ${offline_dir}"
 	echo ""
 
+	ensure_openclaw_user
+	probe_install_root
+
 	# [1] 安装 Node.js
 	local node_tarball="$offline_dir/node.tar.xz"
 	if [ -f "$node_tarball" ]; then
@@ -889,6 +1033,7 @@ do_setup_offline() {
 		local oc_entry=$(find_oc_entry)
 		if [ -n "$oc_entry" ]; then
 			local oc_ver=$("$NODE_BIN" "$oc_entry" --version 2>/dev/null | tr -d '[:space:]')
+			install_openclaw_cli_wrapper || true
 			log_info "OpenClaw v${oc_ver} 安装成功"
 			assert_node_runtime "$OC_NODE_MIN_VERSION"
 		else

@@ -9,7 +9,7 @@
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -50,6 +50,13 @@ const SSL_KEY = '/etc/uhttpd.key';
 const MAX_SESSIONS = parseInt(process.env.OC_MAX_SESSIONS || '5', 10);
 
 // ── 认证令牌 (从 UCI 或环境变量读取) ──
+
+function fixStatePermissions() {
+  try {
+    execFileSync(PERMISSIONS_HELPER, ['fix-state', OC_STATE_DIR], { stdio: 'pipe', timeout: 10000 });
+  } catch {}
+}
+
 function loadAuthToken() {
   try {
     const { execSync } = require('child_process');
@@ -74,10 +81,33 @@ function getMimeType(ext) {
   return types[ext] || 'application/octet-stream';
 }
 
+// 供 LuCI 页面以 iframe 嵌入本服务所需的响应头。
+//
+// 原实现是 ACAO:* + X-Frame-Options:ALLOWALL + CSP default-src:*，
+// 等于对任意站点开放。收紧依据(已逐项核实):
+//   - 页面内所有资源都是本地的 /lib/*.js|css，无任何外链 -> default-src 可收到 'self'
+//   - 唯一的 fetch 是 /health，与 iframe 自身同源 -> 不需要 Access-Control-Allow-Origin
+//   - 存在内联 <style> 与 <script> 块 -> 必须保留 'unsafe-inline'
+//   - xterm.js 不需要 eval -> 去掉 'unsafe-eval'
+//   - LuCI 与本服务端口不同(80 vs 18793)属跨源嵌入，
+//     跨源 iframe 只需 frame-ancestors 放行，与 CORS 无关
+//
+// frame-ancestors 无法在此处限定到具体 LAN 地址(服务端拿不到父页面 origin，
+// 且用户访问 LuCI 的主机名/IP 各不相同)，因此保留通配但去掉 X-Frame-Options:
+// 两者同时存在时旧浏览器会以更宽松的 ALLOWALL 为准。
+// WebSocket 升级仍由 token 校验保护(无 token / 错误 token 均返回 403)。
 const IFRAME_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'X-Frame-Options': 'ALLOWALL',
-  'Content-Security-Policy': "default-src * 'unsafe-inline' 'unsafe-eval' data: blob: ws: wss:; frame-ancestors *",
+  'Content-Security-Policy': [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self' ws: wss:",
+    'frame-ancestors *',
+  ].join('; '),
+  'Referrer-Policy': 'no-referrer',
+  'X-Content-Type-Options': 'nosniff',
 };
 
 // ── WebSocket 帧处理 (RFC 6455) ──
@@ -236,7 +266,7 @@ class PtySession {
       if (!this.alive) return;
       // PTY 以 root 运行，子脚本可能创建了 root-owned 的目录
       // 修复权限，防止以 openclaw 用户运行的 Gateway 遇到 EACCES
-      try { require('child_process').execFileSync('chown', ['-R', 'openclaw:openclaw', OC_DATA], { stdio: 'pipe', timeout: 5000 }); } catch(e) {}
+      try { fixStatePermissions(); } catch(e) {}
       this._spawnFailCount++;
       if (this._spawnFailCount > this._MAX_SPAWN_RETRIES) {
         console.log(`[oc-config] Script failed ${this._spawnFailCount} times, stopping retries`);
@@ -276,11 +306,12 @@ function handleRequest(req, res) {
   let fp = url.pathname;
 
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Allow-Headers': '*' });
+    // 本服务只被同源页面 fetch(/health)，不需要放开 CORS
+    res.writeHead(204, { 'Allow': 'GET, OPTIONS' });
     return res.end();
   }
   if (fp === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     return res.end(JSON.stringify({ status: 'ok', port: PORT, uptime: process.uptime() }));
   }
   if (fp === '/' || fp === '') fp = '/index.html';

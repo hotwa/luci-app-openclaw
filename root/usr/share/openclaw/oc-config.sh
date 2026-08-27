@@ -35,6 +35,21 @@ NODE_BIN="${NODE_BASE}/bin/node"
 OC_STATE_DIR="${OC_DATA}/.openclaw"
 CONFIG_FILE="${OC_STATE_DIR}/openclaw.json"
 
+# WeChat plugin metadata is installed by npm under the scoped package path.
+# Keep discovery explicit so upgrades can validate the package before use.
+oc_find_wechat_plugin_json() {
+	local candidate
+	for candidate in \
+		"${OC_STATE_DIR}/extensions/@tencent-weixin/openclaw-weixin/openclaw.plugin.json" \
+		"${OC_STATE_DIR}/extensions/openclaw-weixin/openclaw.plugin.json" \
+		"${OC_GLOBAL}/lib/node_modules/@tencent-weixin/openclaw-weixin/openclaw.plugin.json" \
+		"${OC_GLOBAL}/node_modules/@tencent-weixin/openclaw-weixin/openclaw.plugin.json"
+	do
+		[ -f "$candidate" ] && { printf '%s\\n' "$candidate"; return 0; }
+	done
+	return 1
+}
+
 export HOME="$OC_DATA"
 export OPENCLAW_HOME="$OC_DATA"
 export OPENCLAW_STATE_DIR="$OC_STATE_DIR"
@@ -51,6 +66,14 @@ export TMPDIR="${OC_DATA}/tmp"
 export TMP="${OC_DATA}/tmp"
 export TEMP="${OC_DATA}/tmp"
 export PATH="${NODE_BASE}/bin:${OC_GLOBAL}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+fix_openclaw_state_permissions() {
+	[ -x /usr/libexec/openclaw-permissions.sh ] && /usr/libexec/openclaw-permissions.sh fix-state "$OC_STATE_DIR"
+}
+
+prepare_openclaw_workdirs() {
+	[ -x /usr/libexec/openclaw-permissions.sh ] && /usr/libexec/openclaw-permissions.sh prepare-workdirs "$OC_DATA"
+}
 
 # ── 查找 openclaw 入口 ──
 OC_PKG_DIR=""
@@ -84,18 +107,190 @@ oc_cmd() {
 	fi
 }
 
+# 以 openclaw 服务用户运行官方诊断。
+# OpenClaw 2026.7.x 的插件安全检查按当前进程 uid 校验插件目录属主
+# (属主必须等于进程 uid 或为 root)。本脚本在 PTY 中以 root 运行，
+# root 身份执行 doctor 会把 openclaw 属主的微信插件目录判为
+# suspicious ownership 并自动清理 plugins.allow / channels 配置。
+oc_doctor_as_openclaw() {
+	if [ -z "$OC_ENTRY" ] || [ ! -x "$NODE_BIN" ]; then
+		echo "ERROR: OpenClaw 未安装或 Node.js 不可用"
+		return 1
+	fi
+	if ! id openclaw >/dev/null 2>&1; then
+		oc_cmd doctor
+		return $?
+	fi
+	local _doc_cmd="HOME=\"${OC_DATA}\" OPENCLAW_HOME=\"${OC_DATA}\" OPENCLAW_STATE_DIR=\"${OC_DATA}/.openclaw\" OPENCLAW_CONFIG_PATH=\"${CONFIG_FILE}\" NODE_ICU_DATA=\"${NODE_BASE}/share/icu\" \"${NODE_BIN}\" \"${OC_ENTRY}\" doctor"
+	if command -v su >/dev/null 2>&1; then
+		su -s /bin/sh openclaw -c "${_doc_cmd}" 2>&1
+	elif command -v runuser >/dev/null 2>&1; then
+		runuser -u openclaw -- sh -c "${_doc_cmd}" 2>&1
+	else
+		start-stop-daemon -S -m -p /tmp/openclaw-doctor-$$.pid -c openclaw:openclaw -x /bin/sh -- -c "${_doc_cmd}" 2>&1
+	fi
+}
+
+# ── 精选模型预设 (与 JS 侧共读同一份数据源) ──
+# 见 root/usr/share/openclaw/model-presets.json。
+# 三层架构: 精选预设 -> 动态发现 (openclaw models list --provider) -> 手动输入。
+OC_MODEL_PRESETS="${OC_MODEL_PRESETS:-/usr/share/openclaw/model-presets.json}"
+OC_MODEL_DISCOVERY_TIMEOUT="${OC_MODEL_DISCOVERY_TIMEOUT:-6}"
+
+# oc_preset_models <provider> — 输出该 provider 的精选模型，每行 "model<TAB>desc"
+oc_preset_models() {
+	[ -f "$OC_MODEL_PRESETS" ] || return 0
+	[ -x "$NODE_BIN" ] || return 0
+	_OC_PP="$1" _OC_PF="$OC_MODEL_PRESETS" "$NODE_BIN" -e '
+		const fs=require("fs");
+		try{
+			const j=JSON.parse(fs.readFileSync(process.env._OC_PF,"utf8"));
+			const p=(j.providers||{})[process.env._OC_PP];
+			if(!p||!Array.isArray(p.models))process.exit(0);
+			for(const m of p.models){
+				if(m&&m.model)console.log(m.model+"\t"+(m.desc||""));
+			}
+		}catch(e){}
+	' 2>/dev/null
+}
+
+# oc_discover_models <provider> — 动态发现当前可用模型 (失败/超时输出空)
+# 上游行为: models list --all 不是各 provider 的超集，必须按 provider 查询；
+# 未安装对应插件时返回 "No models found."，属正常情况。
+# 带 timeout: 避免在 OpenWrt 上把菜单卡死。
+oc_discover_models() {
+	local provider="$1"
+	[ -x "$NODE_BIN" ] || return 0
+	[ -n "$OC_ENTRY" ] || return 0
+	timeout "$OC_MODEL_DISCOVERY_TIMEOUT" "$NODE_BIN" "$OC_ENTRY" models list \
+		--provider "$provider" --plain 2>/dev/null \
+		| sed -n "s|^${provider}/||p" \
+		| grep -v '^[[:space:]]*$'
+}
+
+# oc_pick_model <provider> <默认模型> — 交互式选择模型，结果写入全局 OC_PICKED_MODEL
+# 菜单: 精选预设 (数字) / d 动态发现 / m 手动输入
+oc_pick_model() {
+	local provider="$1" fallback="$2"
+	local list idx line model desc choice
+	OC_PICKED_MODEL=""
+
+	list="$(oc_preset_models "$provider")"
+
+	echo ""
+	if [ -n "$list" ]; then
+		echo -e "  ${CYAN}精选模型:${NC}"
+		idx=1
+		printf '%s\n' "$list" | while IFS="$(printf '\t')" read -r model desc; do
+			[ -n "$model" ] || continue
+			echo -e "    ${CYAN}${idx})${NC} ${model}${desc:+  — ${desc}}"
+			idx=$((idx + 1))
+		done
+	else
+		echo -e "  ${YELLOW}该 Provider 无内置精选列表${NC}"
+	fi
+	echo -e "    ${CYAN}d)${NC} 从 OpenClaw 获取完整模型列表"
+	echo -e "    ${CYAN}m)${NC} 手动输入模型 ID"
+	echo ""
+	prompt_with_default "请选择模型" "1" choice
+
+	case "$choice" in
+		d|D)
+			echo -e "  ${CYAN}正在获取模型列表...${NC}"
+			local found
+			found="$(oc_discover_models "$provider")"
+			if [ -z "$found" ]; then
+				echo -e "  ${YELLOW}未获取到模型列表 (可能需先安装插件或配置 API Key)${NC}"
+				prompt_with_default "请手动输入模型 ID" "$fallback" OC_PICKED_MODEL
+			else
+				echo ""
+				idx=1
+				printf '%s\n' "$found" | while read -r model; do
+					[ -n "$model" ] || continue
+					echo -e "    ${CYAN}${idx})${NC} ${model}"
+					idx=$((idx + 1))
+				done
+				echo ""
+				prompt_with_default "请输入序号或直接输入模型 ID" "1" choice
+				case "$choice" in
+					''|*[!0-9]*) OC_PICKED_MODEL="$choice" ;;
+					*) OC_PICKED_MODEL="$(printf '%s\n' "$found" | sed -n "${choice}p")" ;;
+				esac
+			fi
+			;;
+		m|M)
+			prompt_with_default "请输入模型 ID" "$fallback" OC_PICKED_MODEL
+			;;
+		''|*[!0-9]*)
+			# 非数字直接当作手动输入的模型 ID
+			OC_PICKED_MODEL="$choice"
+			;;
+		*)
+			OC_PICKED_MODEL="$(printf '%s\n' "$list" | sed -n "${choice}p" | cut -f1)"
+			;;
+	esac
+
+	[ -n "$OC_PICKED_MODEL" ] || OC_PICKED_MODEL="$fallback"
+	[ -n "$OC_PICKED_MODEL" ]
+}
+
 # ── JSON 读写 (使用 Node.js) ──
 json_get() {
 	if [ ! -f "$CONFIG_FILE" ]; then echo ""; return; fi
-	_JS_KEY="$1" "$NODE_BIN" -e "
-		const fs=require('fs');
+	_OC_JS_KEY="$1" _OC_JS_CONFIG="$CONFIG_FILE" "$NODE_BIN" -e '
+		const fs=require("fs");
 		try{
-			const d=JSON.parse(fs.readFileSync('${CONFIG_FILE}','utf8'));
-			const ks=process.env._JS_KEY.split('.');let v=d;
-			for(const k of ks){v=v[k];if(v===undefined){console.log('');process.exit(0);}}
-			if(typeof v==='object')console.log(JSON.stringify(v));else console.log(v);
-		}catch(e){console.log('');}
-	" 2>/dev/null
+			const d=JSON.parse(fs.readFileSync(process.env._OC_JS_CONFIG,"utf8"));
+			const ks=process.env._OC_JS_KEY.split(".");let v=d;
+			for(const k of ks){v=v[k];if(v===undefined||v===null){console.log("");process.exit(0);}}
+			if(typeof v==="object")console.log(JSON.stringify(v));else console.log(v);
+		}catch(e){console.log("");}
+	' 2>/dev/null
+}
+
+# ── 配置写入类型表 ──
+# 依据: OpenClaw 官方 schema，基线见 tests/fixtures/openclaw-schema-types.tsv
+#
+# 上游对配置类型做严格校验: gateway.port 必须是 integer、
+# acp.dispatch.enabled / channels.*.enabled 必须是 boolean。
+# 写成字符串会导致 openclaw config validate 失败，进而网关拒绝启动
+# (实测报错: gateway.port: Invalid input / acp.dispatch.enabled: Invalid input)。
+#
+# 用集中表而非在每个调用点传类型，保证现有与将来新增的调用点都默认正确。
+oc_schema_type_for_key() {
+	case "$1" in
+		gateway.port|gateway.handshakeTimeoutMs|gateway.channelHealthCheckMinutes)
+			echo "number" ;;
+		gateway.channelStaleEventThresholdMinutes|gateway.channelMaxRestartsPerHour)
+			echo "number" ;;
+		acp.dispatch.enabled|update.checkOnStart|plugins.enabled)
+			echo "boolean" ;;
+		gateway.controlUi.allowInsecureAuth)
+			echo "boolean" ;;
+		gateway.controlUi.dangerouslyDisableDeviceAuth)
+			echo "boolean" ;;
+		gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback)
+			echo "boolean" ;;
+		gateway.allowRealIpFallback)
+			echo "boolean" ;;
+		channels.*.enabled)
+			echo "boolean" ;;
+		*)
+			echo "string" ;;
+	esac
+}
+
+# 枚举白名单。写入前校验，避免把上游不接受的值(如 gateway.bind=all)落盘。
+oc_schema_enum_for_key() {
+	case "$1" in
+		gateway.bind)      echo "auto lan loopback custom tailnet" ;;
+		gateway.mode)      echo "local remote" ;;
+		gateway.auth.mode) echo "none token password trusted-proxy" ;;
+		logging.level)     echo "silent fatal error warn info debug trace" ;;
+		tools.profile)     echo "minimal coding messaging full" ;;
+		models.mode)       echo "merge replace" ;;
+		*)                 echo "" ;;
+	esac
 }
 
 json_set() {
@@ -120,7 +315,7 @@ json_set() {
 		fi
 
 		# 尝试修复所有权
-		chown -R openclaw:openclaw "$OC_STATE_DIR" 2>/dev/null || true
+		fix_openclaw_state_permissions 2>/dev/null || true
 
 		# 创建空配置文件
 		if ! echo '{}' > "$CONFIG_FILE" 2>/dev/null; then
@@ -146,39 +341,97 @@ json_set() {
 		return 1
 	fi
 
-	# 步骤4: 使用临时文件传递值，避免环境变量转义问题
+	# 步骤4: 解析目标类型并校验枚举
+	# 第三个参数可显式指定类型 (string/number/boolean/json)，未指定时按 schema 判定。
+	local val_type="${3:-}"
+	[ -n "$val_type" ] || val_type="$(oc_schema_type_for_key "$key")"
+	local allowed
+	allowed="$(oc_schema_enum_for_key "$key")"
+	if [ -n "$allowed" ]; then
+		local matched=0 a
+		for a in $allowed; do
+			[ "$value" = "$a" ] && { matched=1; break; }
+		done
+		if [ "$matched" -ne 1 ]; then
+			echo "ERROR: $key 的值 '$value' 不被 OpenClaw 接受" >&2
+			return 1
+		fi
+	fi
+
+	# 步骤5: 使用临时文件传递值，避免环境变量转义问题
 	local tmp_val_file="/tmp/.oc_json_val_$$"
 	if ! printf '%s' "$value" > "$tmp_val_file" 2>/dev/null; then
 		echo "ERROR: 无法创建临时文件 $tmp_val_file" >&2
 		return 1
 	fi
 
-	# 步骤5: 执行 JSON 写入
-	_JS_KEY="$key" _JS_DEBUG="${OC_CONFIG_DEBUG:-0}" "$NODE_BIN" -e "
-		const fs=require('fs');let d={};
-		const debug=process.env._JS_DEBUG==='1';
-		try{
-			const content=fs.readFileSync('${CONFIG_FILE}','utf8');
-			d=JSON.parse(content);
-		}catch(e){
-			if(debug)console.error('JSON parse warning:',e.message);
+	# 步骤6: 执行 JSON 写入；配置损坏时必须 fail closed
+	_OC_JS_KEY="$key" _OC_JS_TYPE="$val_type" _OC_JS_VALFILE="$tmp_val_file" \
+	_OC_JS_CONFIG="$CONFIG_FILE" _OC_JS_DEBUG="${OC_CONFIG_DEBUG:-0}" "$NODE_BIN" -e '
+		const fs=require("fs");
+		const target=process.env._OC_JS_CONFIG;
+		const debug=process.env._OC_JS_DEBUG==="1";
+		let d={};
+		let raw="";
+		try { raw=fs.readFileSync(target,"utf8"); } catch(e) { raw=""; }
+		if (raw.trim() !== "") {
+			try { d=JSON.parse(raw); }
+			catch(e) {
+				console.error("ERROR: 配置文件不是合法 JSON: "+e.message);
+				console.error("HINT: 为避免覆盖后丢失全部配置，本次写入已中止。");
+				process.exit(2);
+			}
+			if (d===null || typeof d!=="object" || Array.isArray(d)) {
+				console.error("ERROR: 配置根节点必须是 JSON 对象，本次写入已中止。");
+				process.exit(2);
+			}
 		}
-		const ks=process.env._JS_KEY.split('.');let o=d;
+		const rawVal=fs.readFileSync(process.env._OC_JS_VALFILE,"utf8");
+		const wantType=process.env._OC_JS_TYPE||"string";
+		let v;
+		if(wantType==="number"){
+			v=Number(rawVal.trim());
+			if(!Number.isFinite(v)){
+				console.error("ERROR: "+process.env._OC_JS_KEY+" 需要数字，收到: "+rawVal.trim());
+				process.exit(3);
+			}
+		}else if(wantType==="boolean"){
+			const t=rawVal.trim().toLowerCase();
+			if(t==="true"||t==="1")v=true;
+			else if(t==="false"||t==="0")v=false;
+			else{
+				console.error("ERROR: "+process.env._OC_JS_KEY+" 需要 true/false，收到: "+rawVal.trim());
+				process.exit(3);
+			}
+		}else if(wantType==="json"){
+			try{ v=JSON.parse(rawVal); }catch(e){
+				console.error("ERROR: "+process.env._OC_JS_KEY+" 需要合法 JSON: "+e.message);
+				process.exit(3);
+			}
+		}else{
+			v=rawVal;
+		}
+		const ks=process.env._OC_JS_KEY.split(".");let o=d;
 		for(let i=0;i<ks.length-1;i++){
-			if(!o[ks[i]]||typeof o[ks[i]]!=='object')o[ks[i]]={};
+			if(!o[ks[i]]||typeof o[ks[i]]!=="object"||Array.isArray(o[ks[i]]))o[ks[i]]={};
 			o=o[ks[i]];
 		}
-		// 读取值并作为字符串保存
-		let v=fs.readFileSync('${tmp_val_file}','utf8');
 		o[ks[ks.length-1]]=v;
+		let mode=0o644;
+		try{ if(fs.existsSync(target)) mode=fs.statSync(target).mode & 0o777; }catch(e){}
+		const tmp=target+".tmp-"+process.pid;
 		try{
-			fs.writeFileSync('${CONFIG_FILE}',JSON.stringify(d,null,2));
-			if(debug)console.log('JSON saved successfully');
+			fs.writeFileSync(tmp,JSON.stringify(d,null,2)+"\n",{mode:0o600});
+			JSON.parse(fs.readFileSync(tmp,"utf8"));
+			try{ fs.chmodSync(tmp,mode); }catch(e){}
+			fs.renameSync(tmp,target);
+			if(debug)console.log("JSON saved successfully ("+wantType+")");
 		}catch(e){
-			console.error('ERROR: Failed to write config:',e.message);
+			try{ if(fs.existsSync(tmp)) fs.unlinkSync(tmp); }catch(e2){}
+			console.error("ERROR: Failed to write config: "+e.message);
 			process.exit(1);
 		}
-	" 2>&1
+	' 2>&1
 	local _js_rc=$?
 
 	# 清理临时文件
@@ -423,6 +676,29 @@ register_custom_provider() {
 	chown openclaw:openclaw "$CONFIG_FILE" 2>/dev/null || true
 }
 
+# Register an Anthropic Messages compatible endpoint.  This is kept separate
+# from the OpenAI-compatible helper because OpenClaw selects the wire protocol
+# from the provider's `api` field.
+register_anthropic_provider() {
+	local base_url="$1" api_key="$2" model_id="$3" model_display="${4:-$3}"
+	_RCP_URL="$base_url" _RCP_KEY="$api_key" _RCP_MID="$model_id" _RCP_MNAME="$model_display" "$NODE_BIN" -e "
+		const fs=require('fs');
+		let d={};
+		try{d=JSON.parse(fs.readFileSync('${CONFIG_FILE}','utf8'));}catch(e){}
+		if(!d.models)d.models={};
+		if(!d.models.providers)d.models.providers={};
+		d.models.mode='merge';
+		d.models.providers['anthropic-compatible']={
+			baseUrl:process.env._RCP_URL,
+			apiKey:process.env._RCP_KEY,
+			api:'anthropic-messages',
+			models:[{id:process.env._RCP_MID,name:process.env._RCP_MNAME,reasoning:false,input:['text','image'],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:200000,maxTokens:32000}]
+		};
+		fs.writeFileSync('${CONFIG_FILE}',JSON.stringify(d,null,2));
+	" 2>/dev/null
+	chown openclaw:openclaw "$CONFIG_FILE" 2>/dev/null || true
+}
+
 # ── 注册 Coding Plan 提供商 (多模型批量注册) ──
 # 用法: register_codingplan_provider <api_key>
 # 按阿里云官方文档注册 bailian 提供商，包含所有 Coding Plan 套餐支持的模型
@@ -535,7 +811,16 @@ restart_gateway() {
 	echo -e "  ${YELLOW}正在重启 Gateway...${NC}"
 
 	# 修复数据目录权限 (root 用户操作可能改变了文件属主)
-	chown -R openclaw:openclaw "$OC_DATA" 2>/dev/null || true
+	fix_openclaw_state_permissions 2>/dev/null || true
+
+	# 首次安装后 UCI 默认保持 disabled。用户在配置向导中确认“立即重启”
+	# 即表示希望当前配置生效，这里同步启用服务，避免提示重启但实际仍为“已禁用”。
+	if [ "$(uci -q get openclaw.main.enabled 2>/dev/null || echo 0)" != "1" ]; then
+		echo -e "  ${CYAN}检测到 Gateway 未启用，正在启用服务...${NC}"
+		uci -q set openclaw.main.enabled='1' 2>/dev/null || true
+		uci -q commit openclaw 2>/dev/null || true
+		/etc/init.d/openclaw enable >/dev/null 2>&1 || true
+	fi
 
 	local port
 	port=$(json_get gateway.port)
@@ -543,6 +828,7 @@ restart_gateway() {
 
 	# ── kill gateway 进程，让 procd respawn ──
 	/etc/init.d/openclaw restart_gateway >/dev/null 2>&1
+	/etc/init.d/openclaw start >/dev/null 2>&1
 
 	# ── 等待端口恢复 (最多 30 秒，含端口释放 + Node.js 冷启动) ──
 	echo -e "  ${YELLOW}⏳ Gateway 启动中，请稍候 (约 15-30 秒)...${NC}"
@@ -665,6 +951,8 @@ configure_model() {
 	echo -e "  ${CYAN}12)${NC} Ollama (本地模型，无需 API Key)"
 	echo -e "  ${CYAN}13)${NC} 腾讯云 Coding Plan (HY T1/TurboS/GLM-5/Kimi)"
 	echo -e "  ${CYAN}14)${NC} 自定义 OpenAI 兼容 API"
+	echo -e "  ${CYAN}15)${NC} 一万AI分享 粉丝专享 API"
+	echo -e "  ${CYAN}16)${NC} 自定义 Anthropic 兼容 API"
 	echo -e "  ${CYAN}0)${NC} 返回"
 	echo ""
 	prompt_with_default "请选择" "1" choice
@@ -691,26 +979,10 @@ configure_model() {
 			if [ -n "$api_key" ]; then
 				auth_set_apikey openai "$api_key"
 				echo ""
-				echo -e "  ${CYAN}可用模型:${NC}"
-				echo -e "    ${CYAN}a)${NC} gpt-5.2       — 最强编程与代理旗舰 (推荐)"
-				echo -e "    ${CYAN}b)${NC} gpt-5-mini    — 高性价比推理"
-				echo -e "    ${CYAN}c)${NC} gpt-5-nano    — 极速低成本"
-				echo -e "    ${CYAN}d)${NC} gpt-4.1       — 最强非推理模型"
-				echo -e "    ${CYAN}e)${NC} o3            — 推理模型"
-				echo -e "    ${CYAN}f)${NC} o4-mini       — 推理轻量"
-				echo -e "    ${CYAN}g)${NC} 手动输入模型名"
-				echo ""
-				prompt_with_default "请选择模型" "a" model_choice
-				case "$model_choice" in
-					a) model_name="gpt-5.2" ;;
-					b) model_name="gpt-5-mini" ;;
-					c) model_name="gpt-5-nano" ;;
-					d) model_name="gpt-4.1" ;;
-					e) model_name="o3" ;;
-					f) model_name="o4-mini" ;;
-					g) prompt_with_default "请输入模型名称" "gpt-5.2" model_name ;;
-					*) model_name="gpt-5.2" ;;
-				esac
+				# 模型清单来自 model-presets.json (与 JS 侧共读同一数据源)，
+				# 并支持 d 动态发现 / m 手动输入，不再硬编码易过期的模型 ID。
+				oc_pick_model openai "gpt-5.6-sol"
+				model_name="$OC_PICKED_MODEL"
 				register_and_set_model "openai/${model_name}"
 				echo -e "  ${GREEN}✅ OpenAI 已配置，活跃模型: openai/${model_name}${NC}"
 			fi
@@ -724,24 +996,10 @@ configure_model() {
 			if [ -n "$api_key" ]; then
 				auth_set_apikey anthropic "$api_key"
 				echo ""
-				echo -e "  ${CYAN}可用模型:${NC}"
-				echo -e "    ${CYAN}a)${NC} claude-sonnet-4-20250514   — Claude Sonnet 4 (推荐)"
-				echo -e "    ${CYAN}b)${NC} claude-opus-4-20250514     — Claude Opus 4 顶级推理"
-				echo -e "    ${CYAN}c)${NC} claude-haiku-4-5           — Claude Haiku 4.5 轻量快速"
-				echo -e "    ${CYAN}d)${NC} claude-sonnet-4.5          — Claude Sonnet 4.5"
-				echo -e "    ${CYAN}e)${NC} claude-sonnet-4.6          — Claude Sonnet 4.6"
-				echo -e "    ${CYAN}f)${NC} 手动输入模型名"
-				echo ""
-				prompt_with_default "请选择模型" "a" model_choice
-				case "$model_choice" in
-					a) model_name="claude-sonnet-4-20250514" ;;
-					b) model_name="claude-opus-4-20250514" ;;
-					c) model_name="claude-haiku-4-5" ;;
-					d) model_name="claude-sonnet-4-5" ;;
-					e) model_name="claude-sonnet-4-6" ;;
-					f) prompt_with_default "请输入模型名称" "claude-sonnet-4-20250514" model_name ;;
-					*) model_name="claude-sonnet-4-20250514" ;;
-				esac
+				# 模型清单来自 model-presets.json (与 JS 侧共读同一数据源)，
+				# 并支持 d 动态发现 / m 手动输入，不再硬编码易过期的模型 ID。
+				oc_pick_model anthropic "claude-sonnet-5"
+				model_name="$OC_PICKED_MODEL"
 				register_and_set_model "anthropic/${model_name}"
 				echo -e "  ${GREEN}✅ Anthropic 已配置，活跃模型: anthropic/${model_name}${NC}"
 			fi
@@ -755,24 +1013,10 @@ configure_model() {
 			if [ -n "$api_key" ]; then
 				auth_set_apikey google "$api_key"
 				echo ""
-				echo -e "  ${CYAN}可用模型:${NC}"
-				echo -e "    ${CYAN}a)${NC} gemini-2.5-pro           — 旗舰推理 (推荐)"
-				echo -e "    ${CYAN}b)${NC} gemini-2.5-flash         — 快速均衡"
-				echo -e "    ${CYAN}c)${NC} gemini-2.5-flash-lite    — 极速低成本"
-				echo -e "    ${CYAN}d)${NC} gemini-3-flash-preview   — Gemini 3 Flash 预览"
-				echo -e "    ${CYAN}e)${NC} gemini-3-pro-preview     — Gemini 3 Pro 预览"
-				echo -e "    ${CYAN}f)${NC} 手动输入模型名"
-				echo ""
-				prompt_with_default "请选择模型" "a" model_choice
-				case "$model_choice" in
-					a) model_name="gemini-2.5-pro" ;;
-					b) model_name="gemini-2.5-flash" ;;
-					c) model_name="gemini-2.5-flash-lite" ;;
-					d) model_name="gemini-3-flash-preview" ;;
-					e) model_name="gemini-3-pro-preview" ;;
-					f) prompt_with_default "请输入模型名称" "gemini-2.5-pro" model_name ;;
-					*) model_name="gemini-2.5-pro" ;;
-				esac
+				# 模型清单来自 model-presets.json (与 JS 侧共读同一数据源)，
+				# 并支持 d 动态发现 / m 手动输入，不再硬编码易过期的模型 ID。
+				oc_pick_model google "gemini-2.5-pro"
+				model_name="$OC_PICKED_MODEL"
 				register_and_set_model "google/${model_name}"
 				echo -e "  ${GREEN}✅ Google Gemini 已配置，活跃模型: google/${model_name}${NC}"
 			fi
@@ -787,26 +1031,10 @@ configure_model() {
 			if [ -n "$api_key" ]; then
 				auth_set_apikey openrouter "$api_key"
 				echo ""
-				echo -e "  ${CYAN}常用模型 (格式: provider/model):${NC}"
-				echo -e "    ${CYAN}a)${NC} anthropic/claude-sonnet-4    — Claude Sonnet 4 (推荐)"
-				echo -e "    ${CYAN}b)${NC} anthropic/claude-opus-4      — Claude Opus 4"
-				echo -e "    ${CYAN}c)${NC} openai/gpt-5.2              — GPT-5.2"
-				echo -e "    ${CYAN}d)${NC} google/gemini-2.5-pro        — Gemini 2.5 Pro"
-				echo -e "    ${CYAN}e)${NC} deepseek/deepseek-r1         — DeepSeek R1"
-				echo -e "    ${CYAN}f)${NC} meta-llama/llama-4-maverick  — Meta Llama 4"
-				echo -e "    ${CYAN}g)${NC} 手动输入模型名"
-				echo ""
-				prompt_with_default "请选择模型" "a" model_choice
-				case "$model_choice" in
-					a) model_name="anthropic/claude-sonnet-4" ;;
-					b) model_name="anthropic/claude-opus-4" ;;
-					c) model_name="openai/gpt-5.2" ;;
-					d) model_name="google/gemini-2.5-pro" ;;
-					e) model_name="deepseek/deepseek-r1" ;;
-					f) model_name="meta-llama/llama-4-maverick" ;;
-					g) prompt_with_default "请输入模型名称" "anthropic/claude-sonnet-4" model_name ;;
-					*) model_name="anthropic/claude-sonnet-4" ;;
-				esac
+				# 模型清单来自 model-presets.json (与 JS 侧共读同一数据源)，
+				# 并支持 d 动态发现 / m 手动输入，不再硬编码易过期的模型 ID。
+				oc_pick_model openrouter "auto"
+				model_name="$OC_PICKED_MODEL"
 				register_and_set_model "openrouter/${model_name}"
 				echo -e "  ${GREEN}✅ OpenRouter 已配置，活跃模型: openrouter/${model_name}${NC}"
 			fi
@@ -852,40 +1080,10 @@ configure_model() {
 				echo -e "  ${CYAN}选择默认模型:${NC}"
 				echo ""
 				echo -e "  ${CYAN}── GPT 系列 ──${NC}"
-				echo -e "    ${CYAN}a)${NC}  github-copilot/gpt-4.1           — GPT-4.1 ${GREEN}(推荐)${NC}"
-				echo -e "    ${CYAN}b)${NC}  github-copilot/gpt-4o            — GPT-4o"
-				echo -e "    ${CYAN}c)${NC}  github-copilot/gpt-5             — GPT-5"
-				echo -e "    ${CYAN}d)${NC}  github-copilot/gpt-5-mini        — GPT-5 mini"
-				echo -e "    ${CYAN}e)${NC}  github-copilot/gpt-5.1           — GPT-5.1"
-				echo -e "    ${CYAN}f)${NC}  github-copilot/gpt-5.2           — GPT-5.2"
-				echo -e "    ${CYAN}g)${NC}  github-copilot/gpt-5.2-codex     — GPT-5.2 Codex"
-				echo ""
-				echo -e "  ${CYAN}── Claude 系列 ──${NC}"
-				echo -e "    ${CYAN}h)${NC}  github-copilot/claude-sonnet-4   — Claude Sonnet 4"
-				echo -e "    ${CYAN}i)${NC}  github-copilot/claude-sonnet-4.5 — Claude Sonnet 4.5"
-				echo -e "    ${CYAN}j)${NC}  github-copilot/claude-sonnet-4.6 — Claude Sonnet 4.6"
-				echo ""
-				echo -e "  ${CYAN}── Gemini 系列 ──${NC}"
-				echo -e "    ${CYAN}k)${NC}  github-copilot/gemini-2.5-pro    — Gemini 2.5 Pro"
-				echo ""
-				echo -e "    ${CYAN}m)${NC}  手动输入模型名"
-				echo ""
-				prompt_with_default "请选择模型" "a" model_choice
-				case "$model_choice" in
-					a) model_name="github-copilot/gpt-4.1" ;;
-					b) model_name="github-copilot/gpt-4o" ;;
-					c) model_name="github-copilot/gpt-5" ;;
-					d) model_name="github-copilot/gpt-5-mini" ;;
-					e) model_name="github-copilot/gpt-5.1" ;;
-					f) model_name="github-copilot/gpt-5.2" ;;
-					g) model_name="github-copilot/gpt-5.2-codex" ;;
-					h) model_name="github-copilot/claude-sonnet-4" ;;
-					i) model_name="github-copilot/claude-sonnet-4.5" ;;
-					j) model_name="github-copilot/claude-sonnet-4.6" ;;
-					k) model_name="github-copilot/gemini-2.5-pro" ;;
-					m) prompt_with_default "请输入模型名称" "github-copilot/gpt-4.1" model_name ;;
-					*) model_name="github-copilot/gpt-4.1" ;;
-				esac
+				# 模型清单来自 model-presets.json (与 JS 侧共读同一数据源)，
+				# 并支持 d 动态发现 / m 手动输入，不再硬编码易过期的模型 ID。
+				oc_pick_model github-copilot "gpt-5.5"
+				model_name="github-copilot/$OC_PICKED_MODEL"
 				register_and_set_model "$model_name"
 				echo -e "  ${GREEN}✅ 活跃模型已设置: ${model_name}${NC}"
 			else
@@ -925,50 +1123,10 @@ configure_model() {
 					if [ -n "$api_key" ]; then
 						echo ""
 						echo -e "  ${CYAN}── 千问商业版 ──${NC}"
-						echo -e "    ${CYAN}a)${NC}  qwen-max             — 千问Max 旗舰模型 (推荐)"
-						echo -e "    ${CYAN}b)${NC}  qwen-plus            — 千问Plus 均衡之选 (已升级Qwen3.5)"
-						echo -e "    ${CYAN}c)${NC}  qwen-flash           — 千问Flash 速度最快 (已升级Qwen3.5)"
-						echo -e "    ${CYAN}d)${NC}  qwen-turbo           — 千问Turbo 经济实惠"
-						echo -e "    ${CYAN}e)${NC}  qwen-long            — 千问Long 超长上下文 (1000万Token)"
-						echo -e "  ${CYAN}── 千问Coder ──${NC}"
-						echo -e "    ${CYAN}f)${NC}  qwen3-coder-plus     — 代码专用旗舰 (100万上下文)"
-						echo -e "    ${CYAN}g)${NC}  qwen3-coder-flash    — 代码专用极速"
-						echo -e "  ${CYAN}── 推理模型 ──${NC}"
-						echo -e "    ${CYAN}h)${NC}  qwq-plus             — QwQ推理模型 (数学/代码强化)"
-						echo -e "  ${CYAN}── 千问开源版 ──${NC}"
-						echo -e "    ${CYAN}i)${NC}  qwen3-235b-a22b      — Qwen3 235B MoE"
-						echo -e "    ${CYAN}j)${NC}  qwen3-32b            — Qwen3 32B"
-						echo -e "    ${CYAN}k)${NC}  qwen3-30b-a3b        — Qwen3 30B MoE"
-						echo -e "  ${CYAN}── 第三方模型 ──${NC}"
-						echo -e "    ${CYAN}l)${NC}  deepseek-r1           — DeepSeek R1 推理"
-						echo -e "    ${CYAN}m)${NC}  deepseek-v3           — DeepSeek V3"
-						echo -e "    ${CYAN}n)${NC}  kimi-k2.5            — Kimi K2.5"
-						echo -e "    ${CYAN}o)${NC}  glm-5                — 智谱 GLM-5"
-						echo -e "    ${CYAN}p)${NC}  MiniMax-M2.5         — MiniMax M2.5"
-						echo -e "  ${CYAN}────────────${NC}"
-						echo -e "    ${CYAN}z)${NC}  手动输入模型名"
-						echo ""
-						prompt_with_default "请选择模型" "a" model_choice
-						case "$model_choice" in
-							a) model_name="qwen-max" ;;
-							b) model_name="qwen-plus" ;;
-							c) model_name="qwen-flash" ;;
-							d) model_name="qwen-turbo" ;;
-							e) model_name="qwen-long" ;;
-							f) model_name="qwen3-coder-plus" ;;
-							g) model_name="qwen3-coder-flash" ;;
-							h) model_name="qwq-plus" ;;
-							i) model_name="qwen3-235b-a22b" ;;
-							j) model_name="qwen3-32b" ;;
-							k) model_name="qwen3-30b-a3b" ;;
-							l) model_name="deepseek-r1" ;;
-							m) model_name="deepseek-v3" ;;
-							n) model_name="kimi-k2.5" ;;
-							o) model_name="glm-5" ;;
-							p) model_name="MiniMax-M2.5" ;;
-							z) prompt_with_default "请输入模型名称" "qwen-max" model_name ;;
-							*) model_name="qwen-max" ;;
-						esac
+						# 模型清单来自 model-presets.json (与 JS 侧共读同一数据源)，
+						# 并支持 d 动态发现 / m 手动输入，不再硬编码易过期的模型 ID。
+						oc_pick_model qwen "qwen3.5-plus"
+						model_name="$OC_PICKED_MODEL"
 						auth_set_apikey dashscope "$api_key"
 						register_custom_provider dashscope "https://dashscope.aliyuncs.com/compatible-mode/v1" "$api_key" "$model_name" "$model_name"
 						register_and_set_model "dashscope/${model_name}"
@@ -1027,26 +1185,10 @@ configure_model() {
 			prompt_with_default "请输入 xAI API Key" "" api_key
 			if [ -n "$api_key" ]; then
 				echo ""
-				echo -e "  ${CYAN}可用模型:${NC}"
-				echo -e "    ${CYAN}a)${NC} grok-4              — Grok 4 旗舰 (推荐)"
-				echo -e "    ${CYAN}b)${NC} grok-4-fast         — Grok 4 Fast"
-				echo -e "    ${CYAN}c)${NC} grok-3              — Grok 3"
-				echo -e "    ${CYAN}d)${NC} grok-3-fast         — Grok 3 Fast"
-				echo -e "    ${CYAN}e)${NC} grok-3-mini         — Grok 3 Mini"
-				echo -e "    ${CYAN}f)${NC} grok-3-mini-fast    — Grok 3 Mini Fast"
-				echo -e "    ${CYAN}g)${NC} 手动输入模型名"
-				echo ""
-				prompt_with_default "请选择模型" "a" model_choice
-				case "$model_choice" in
-					a) model_name="grok-4" ;;
-					b) model_name="grok-4-fast" ;;
-					c) model_name="grok-3" ;;
-					d) model_name="grok-3-fast" ;;
-					e) model_name="grok-3-mini" ;;
-					f) model_name="grok-3-mini-fast" ;;
-					g) prompt_with_default "请输入模型名称" "grok-4" model_name ;;
-					*) model_name="grok-4" ;;
-				esac
+				# 模型清单来自 model-presets.json (与 JS 侧共读同一数据源)，
+				# 并支持 d 动态发现 / m 手动输入，不再硬编码易过期的模型 ID。
+				oc_pick_model xai "grok-4.3"
+				model_name="$OC_PICKED_MODEL"
 				auth_set_apikey xai "$api_key"
 				register_and_set_model "xai/${model_name}"
 				echo -e "  ${GREEN}✅ xAI Grok 已配置，活跃模型: xai/${model_name}${NC}"
@@ -1062,7 +1204,7 @@ configure_model() {
 			if [ -n "$api_key" ]; then
 				echo ""
 				echo -e "  ${CYAN}可用模型:${NC}"
-				echo -e "    ${CYAN}a)${NC} meta-llama/llama-4-maverick-17b-128e-instruct  — Llama 4 Maverick (推荐)"
+				echo -e "    ${CYAN}a)${NC} llama-3.3-70b-versatile                    — Llama 3.3 (推荐)"
 				echo -e "    ${CYAN}b)${NC} meta-llama/llama-4-scout-17b-16e-instruct      — Llama 4 Scout"
 				echo -e "    ${CYAN}c)${NC} moonshotai/kimi-k2-instruct                    — Kimi K2"
 				echo -e "    ${CYAN}d)${NC} qwen/qwen3-32b                                 — 通义千问 Qwen3 32B"
@@ -1072,14 +1214,14 @@ configure_model() {
 				echo ""
 				prompt_with_default "请选择模型" "a" model_choice
 				case "$model_choice" in
-					a) model_name="meta-llama/llama-4-maverick-17b-128e-instruct" ;;
+				a) model_name="llama-3.3-70b-versatile" ;;
 					b) model_name="meta-llama/llama-4-scout-17b-16e-instruct" ;;
 					c) model_name="moonshotai/kimi-k2-instruct" ;;
 					d) model_name="qwen/qwen3-32b" ;;
 					e) model_name="llama-3.3-70b-versatile" ;;
 					f) model_name="llama-3.1-8b-instant" ;;
-					g) prompt_with_default "请输入模型名称" "meta-llama/llama-4-maverick-17b-128e-instruct" model_name ;;
-					*) model_name="meta-llama/llama-4-maverick-17b-128e-instruct" ;;
+					g) prompt_with_default "请输入模型名称" "llama-3.3-70b-versatile" model_name ;;
+					*) model_name="llama-3.3-70b-versatile" ;;
 				esac
 				auth_set_apikey groq "$api_key"
 				register_and_set_model "groq/${model_name}"
@@ -1244,33 +1386,10 @@ configure_model() {
 				echo ""
 				echo -e "  ${CYAN}可用模型 (Coding Plan 套餐内):${NC}"
 				echo -e "  ${CYAN}── 智能推荐 ──${NC}"
-				echo -e "    ${CYAN}a)${NC} tc-code-latest        — 自动路由 (由平台选择最佳模型) ${GREEN}★ 推荐${NC}"
-				echo -e "  ${CYAN}── 推理模型 ──${NC}"
-				echo -e "    ${CYAN}b)${NC} hunyuan-t1            — 混元 T1 深度推理"
-				echo -e "    ${CYAN}c)${NC} hunyuan-2.0-thinking  — 混元 2.0 Thinking"
-				echo -e "  ${CYAN}── 旗舰模型 ──${NC}"
-				echo -e "    ${CYAN}d)${NC} hunyuan-turbos        — 混元 TurboS 旗舰"
-				echo -e "    ${CYAN}e)${NC} hunyuan-2.0-instruct  — 混元 2.0 Instruct"
-				echo -e "  ${CYAN}── 第三方模型 ──${NC}"
-				echo -e "    ${CYAN}f)${NC} glm-5                 — 智谱 GLM-5"
-				echo -e "    ${CYAN}g)${NC} kimi-k2.5             — Moonshot Kimi K2.5"
-				echo -e "    ${CYAN}h)${NC} minimax-m2.5          — MiniMax M2.5"
-				echo -e "  ${CYAN}────────────${NC}"
-				echo -e "    ${CYAN}z)${NC} 手动输入模型名"
-				echo ""
-				prompt_with_default "请选择默认模型" "a" model_choice
-				case "$model_choice" in
-					a) model_name="tc-code-latest" ;;
-					b) model_name="hunyuan-t1" ;;
-					c) model_name="hunyuan-2.0-thinking" ;;
-					d) model_name="hunyuan-turbos" ;;
-					e) model_name="hunyuan-2.0-instruct" ;;
-					f) model_name="glm-5" ;;
-					g) model_name="kimi-k2.5" ;;
-					h) model_name="minimax-m2.5" ;;
-					z) prompt_with_default "请输入模型名称" "tc-code-latest" model_name ;;
-					*) model_name="tc-code-latest" ;;
-				esac
+				# 模型清单来自 model-presets.json (与 JS 侧共读同一数据源)，
+				# 并支持 d 动态发现 / m 手动输入，不再硬编码易过期的模型 ID。
+				oc_pick_model tencent-tokenhub "hy3"
+				model_name="$OC_PICKED_MODEL"
 				echo ""
 				echo -e "  ${CYAN}正在注册腾讯云 Coding Plan 提供商 (含全部套餐模型)...${NC}"
 				auth_set_apikey lkeap "$api_key"
@@ -1293,6 +1412,41 @@ configure_model() {
 				register_custom_provider openai-compatible "$base_url" "$api_key" "$model_name" "$model_name"
 				register_and_set_model "openai-compatible/${model_name}"
 				echo -e "  ${GREEN}✅ 自定义模型已配置，活跃模型: openai-compatible/${model_name}${NC}"
+			fi
+			;;
+		15)
+			echo ""
+			echo -e "  ${BOLD}一万AI分享 粉丝专享 API${NC}"
+			echo -e "  ${DIM}OpenAI 兼容模式；Base URL 和模型已内置，只需要填写 API Key。${NC}"
+			echo -e "  ${DIM}Base URL: https://api.910501.xyz/v1${NC}"
+		prompt_with_default "请输入一万AI分享 API Key" "" api_key
+			if [ -n "$api_key" ]; then
+				auth_set_apikey yiwanai "$api_key" "yiwanai:fan"
+				register_custom_provider yiwanai "https://api.910501.xyz/v1" "$api_key" "gpt-5.5" "gpt-5.5" 1000000 32000
+				# The fan endpoint exposes a reasoning-capable GPT-5.5 model.
+				_OC_YIWAN_CONFIG="$CONFIG_FILE" "$NODE_BIN" -e '
+					const fs=require("fs");
+					const f=process.env._OC_YIWAN_CONFIG;
+					const d=JSON.parse(fs.readFileSync(f,"utf8"));
+					const p=d.models && d.models.providers && d.models.providers.yiwanai;
+					if(p && p.models && p.models[0]) p.models[0].reasoning=true;
+					fs.writeFileSync(f,JSON.stringify(d,null,2));
+				' 2>/dev/null
+				register_and_set_model "yiwanai/gpt-5.5"
+				echo -e "  ${GREEN}✅ 一万AI分享粉丝专享 API 已配置，活跃模型: yiwanai/gpt-5.5${NC}"
+			fi
+			;;
+		16)
+			echo ""
+			echo -e "  ${BOLD}自定义 Anthropic 兼容 API${NC}"
+			prompt_with_default "API Base URL (如 https://api.example.com)" "" base_url
+			prompt_with_default "API Key" "" api_key
+			prompt_with_default "模型名称" "" model_name
+			if [ -n "$base_url" ] && [ -n "$api_key" ] && [ -n "$model_name" ]; then
+				auth_set_apikey anthropic-compatible "$api_key" "anthropic-compatible:manual"
+				register_anthropic_provider "$base_url" "$api_key" "$model_name" "$model_name"
+				register_and_set_model "anthropic-compatible/${model_name}"
+				echo -e "  ${GREEN}✅ 自定义 Anthropic API 已配置，活跃模型: anthropic-compatible/${model_name}${NC}"
 			fi
 			;;
 		0) return ;;
@@ -2000,7 +2154,7 @@ health_check() {
 
 	echo ""
 	echo -e "  ${CYAN}运行官方诊断...${NC}"
-	oc_cmd doctor 2>/dev/null || true
+	oc_doctor_as_openclaw 2>/dev/null || true
 
 	echo ""
 	echo -e "  ${CYAN}最近日志 (最后 10 行):${NC}"
@@ -2455,7 +2609,9 @@ advanced_menu() {
 		gw_port=$(json_get "gateway.port" 2>/dev/null || echo "18789")
 		gw_bind=$(json_get "gateway.bind" 2>/dev/null || echo "lan")
 		gw_mode=$(json_get "gateway.mode" 2>/dev/null || echo "local")
-		log_level=$(json_get "gateway.logLevel" 2>/dev/null || echo "")
+		# 读 logging.level (正确键)；兼容旧配置里残留的 gateway.logLevel 以便显示
+		log_level=$(json_get "logging.level" 2>/dev/null || echo "")
+		[ -n "$log_level" ] || log_level=$(json_get "gateway.logLevel" 2>/dev/null || echo "")
 		acp_dispatch=$(json_get "acp.dispatch.enabled" 2>/dev/null || echo "false")
 
 		echo ""
@@ -2480,32 +2636,57 @@ advanced_menu() {
 				echo ""
 				prompt_with_default "请输入 Gateway 端口" "$gw_port" new_port
 				if [ -n "$new_port" ] && [ "$new_port" != "$gw_port" ]; then
-					json_set "gateway.port" "$new_port"
-					# 同步到 UCI
-					uci set openclaw.main.port="$new_port" 2>/dev/null
-					uci commit openclaw 2>/dev/null
-					echo -e "  ${GREEN}✅ 端口已设置为 ${new_port}${NC}"
-					ask_restart
+					# 端口必须是 1-65535 的整数，先自行校验再写入，
+					# 避免把非法值交给 json_set 后只得到一条底层报错。
+					case "$new_port" in
+						''|*[!0-9]*)
+							echo -e "  ${YELLOW}无效端口: 必须是数字${NC}"
+							;;
+						*)
+							if [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+								echo -e "  ${YELLOW}无效端口: 需在 1-65535 之间${NC}"
+							elif json_set "gateway.port" "$new_port"; then
+								# 仅在 JSON 写入成功后才同步 UCI，避免两边不一致
+								uci set openclaw.main.port="$new_port" 2>/dev/null
+								uci commit openclaw 2>/dev/null
+								echo -e "  ${GREEN}✅ 端口已设置为 ${new_port}${NC}"
+								ask_restart
+							fi
+							;;
+					esac
 				fi
 				;;
 			2)
 				echo ""
+				# 取值必须与 OpenClaw schema 的 gateway.bind 枚举一致:
+				# auto/lan/loopback/custom/tailnet。历史上这里提供的 all
+				# 不被上游接受 (实测: gateway.bind: Invalid input)，
+				# 想监听所有接口应使用 custom + customBindHost。
 				echo -e "  ${CYAN}绑定地址选项:${NC}"
 				echo "    lan      - 仅 LAN 接口 (推荐)"
 				echo "    loopback - 仅本机访问"
-				echo "    all      - 所有接口 (0.0.0.0)"
+				echo "    auto     - 自动选择"
+				echo "    custom   - 自定义地址 (可配合 0.0.0.0 监听所有接口)"
+				echo "    tailnet  - Tailscale 网络"
 				echo ""
 				prompt_with_default "请输入绑定地址" "$gw_bind" new_bind
 				if [ -n "$new_bind" ]; then
+					# 兼容旧值: 用户/旧配置里的 all 等价于 custom + 0.0.0.0
+					if [ "$new_bind" = "all" ]; then
+						echo -e "  ${YELLOW}提示: OpenClaw 已不接受 all，已改用 custom + 0.0.0.0${NC}"
+						new_bind="custom"
+						json_set "gateway.customBindHost" "0.0.0.0" || true
+					fi
 					case "$new_bind" in
-						lan|loopback|all)
-							json_set "gateway.bind" "$new_bind"
-							uci set openclaw.main.bind="$new_bind" 2>/dev/null
-							uci commit openclaw 2>/dev/null
-							echo -e "  ${GREEN}✅ 绑定地址已设置为 ${new_bind}${NC}"
-							ask_restart
+						auto|lan|loopback|custom|tailnet)
+							if json_set "gateway.bind" "$new_bind"; then
+								uci set openclaw.main.bind="$new_bind" 2>/dev/null
+								uci commit openclaw 2>/dev/null
+								echo -e "  ${GREEN}✅ 绑定地址已设置为 ${new_bind}${NC}"
+								ask_restart
+							fi
 							;;
-						*) echo -e "  ${YELLOW}无效选项${NC}" ;;
+						*) echo -e "  ${YELLOW}无效选项 (允许: auto/lan/loopback/custom/tailnet)${NC}" ;;
 					esac
 				fi
 				;;
@@ -2517,21 +2698,27 @@ advanced_menu() {
 				echo ""
 				prompt_with_default "请输入运行模式" "$gw_mode" new_mode
 				if [ -n "$new_mode" ] && [ "$new_mode" != "$gw_mode" ]; then
-					json_set "gateway.mode" "$new_mode"
-					echo -e "  ${GREEN}✅ 运行模式已设置为 ${new_mode}${NC}"
-					ask_restart
+					if json_set "gateway.mode" "$new_mode"; then
+						echo -e "  ${GREEN}✅ 运行模式已设置为 ${new_mode}${NC}"
+						ask_restart
+					fi
 				fi
 				;;
 			4)
 				echo ""
+				# 正确键是顶层 logging.level。gateway.logLevel 不存在于
+				# OpenClaw schema (gateway.additionalProperties=false)，
+				# 实测 config set 报 Unrecognized key，手写进文件则被静默忽略，
+				# 表现为"界面显示已设置但从未生效"。
 				echo -e "  ${CYAN}日志级别选项:${NC}"
-				echo "    debug, info, warn, error"
+				echo "    silent, fatal, error, warn, info, debug, trace"
 				echo ""
 				prompt_with_default "请输入日志级别" "${log_level:-info}" new_level
 				if [ -n "$new_level" ]; then
-					json_set "gateway.logLevel" "$new_level"
-					echo -e "  ${GREEN}✅ 日志级别已设置为 ${new_level}${NC}"
-					ask_restart
+					if json_set "logging.level" "$new_level"; then
+						echo -e "  ${GREEN}✅ 日志级别已设置为 ${new_level}${NC}"
+						ask_restart
+					fi
 				fi
 				;;
 			5)
@@ -2543,11 +2730,12 @@ advanced_menu() {
 				prompt_with_default "请输入设置" "$acp_dispatch" new_acp
 				case "$new_acp" in
 					true|false)
-						json_set "acp.dispatch.enabled" "$new_acp"
-						echo -e "  ${GREEN}✅ ACP Dispatch 已设置为 ${new_acp}${NC}"
-						ask_restart
+						if json_set "acp.dispatch.enabled" "$new_acp"; then
+							echo -e "  ${GREEN}✅ ACP Dispatch 已设置为 ${new_acp}${NC}"
+							ask_restart
+						fi
 						;;
-					*) echo -e "  ${YELLOW}无效选项${NC}" ;;
+					*) echo -e "  ${YELLOW}无效选项 (只接受 true / false)${NC}" ;;
 				esac
 				;;
 			6)
@@ -2610,11 +2798,19 @@ advanced_menu() {
 case "${1:-}" in
 	--set)
 		if [ -n "${2:-}" ] && [ -n "${3:-}" ]; then
-			json_set "$2" "$3"
-			chown openclaw:openclaw "$CONFIG_FILE" 2>/dev/null || true
-			echo -e "${GREEN}✅ 已设置 $2${NC}"
+			# 必须检查 json_set 的返回码: 类型/枚举校验失败或配置损坏时
+			# 写入会被拒绝，此时不能再报告成功 (否则就是"界面显示已设置、
+			# 实际未生效"的假成功)。
+			if json_set "$2" "$3"; then
+				chown openclaw:openclaw "$CONFIG_FILE" 2>/dev/null || true
+				echo -e "${GREEN}✅ 已设置 $2${NC}"
+			else
+				echo -e "${RED}❌ 设置失败: $2${NC}" >&2
+				exit 1
+			fi
 		else
-			echo "用法: oc-config.sh --set <key> <value>"
+			echo "用法: oc-config.sh --set <key> <value> [类型]"
+			echo "类型可选: string | number | boolean | json (默认按 schema 自动判定)"
 		fi
 		;;
 	--get)
