@@ -133,6 +133,8 @@ if grep -E '^[[:space:]]*ifeq[[:space:]]*\(\$\(wildcard[[:space:]].*luci\.mk' "$
 	fail "Makefile must not branch on luci.mk availability (issue #60)"
 fi
 grep -Fq 'define Package/$(PKG_NAME)' "$MK" || fail "Makefile must define Package/... explicitly"
+grep -Fq 'define Build/Configure' "$MK" || fail "Makefile must define Build/Configure to override package.mk default"
+grep -Fq 'define Build/Compile' "$MK" || fail "Makefile must define Build/Compile to override package.mk default"
 
 # 新增的共享数据文件必须显式安装: build 脚本只 cp *.js 通配，
 # .json 不会被自动带上 (model-presets.json 曾因此漏装)。

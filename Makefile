@@ -47,6 +47,12 @@ define Package/$(PKG_NAME)/conffiles
 /etc/config/openclaw
 endef
 
+define Build/Configure
+endef
+
+define Build/Compile
+endef
+
 # 安装清单必须与 scripts/build_ipk.sh / scripts/build_run.sh 保持一致。
 # 特别是 /usr/share/openclaw 下的 oc-config-interactive.js 与 oc-menu-engine.js:
 # 缺失时 oc-config.sh 的 can_use_interactive() 会静默回落到功能较少的传统
