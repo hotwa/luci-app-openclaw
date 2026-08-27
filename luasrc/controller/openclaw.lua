@@ -53,6 +53,18 @@ local function shell_quote(value)
 	return util.shellquote(value or "")
 end
 
+local function is_safe_openclaw_root(value)
+	if type(value) ~= "string" or value == "" or value == "/" then
+		return false
+	end
+	if value == "/openclaw" or value == "/opt/openclaw" then
+		return true
+	end
+	return value:match("^/mnt/[^/]+/openclaw$") ~= nil
+		or value:match("^/media/[^/]+/openclaw$") ~= nil
+		or value:match("^/srv/[^/]+/openclaw$") ~= nil
+end
+
 local function path_type(path)
 	return nixio_fs.stat(path, "type")
 end
@@ -63,6 +75,19 @@ end
 
 local function file_exists(path)
 	return path_type(path) ~= nil
+end
+
+local function ensure_openclaw_user(oc_data)
+	local sys = require "luci.sys"
+	if sys.call("id -u openclaw >/dev/null 2>&1") == 0 then
+		return true
+	end
+	local create = "OC_UID=1000; while grep -q \"^[^:]*:x:${OC_UID}:\" /etc/passwd; do OC_UID=$((OC_UID+1)); done; " ..
+		"OC_GID=$OC_UID; grep -q '^openclaw:' /etc/group || echo \"openclaw:x:${OC_GID}:\" >> /etc/group; " ..
+		"grep -q '^openclaw:' /etc/passwd || echo \"openclaw:x:${OC_UID}:${OC_GID}:openclaw:${OC_HOME}:/bin/false\" >> /etc/passwd; " ..
+		"grep -q '^openclaw:' /etc/shadow || echo 'openclaw:x:0:0:99999:7:::' >> /etc/shadow"
+	sys.exec("OC_HOME=" .. shell_quote(oc_data) .. " sh -c " .. shell_quote(create) .. " >/dev/null 2>&1")
+	return sys.call("id -u openclaw >/dev/null 2>&1") == 0
 end
 
 local function find_oc_entry(paths)
@@ -173,7 +198,14 @@ local function get_wechat_paths(paths)
 end
 
 local function wechat_helper_command(action, extra_args)
-	local command = string.format("start-stop-daemon -S -c openclaw -x %s -- %s", shell_quote(WECHAT_HELPER), action)
+	local paths = get_runtime_paths()
+	local command = string.format(
+		"HOME=%s NPM_CONFIG_CACHE=%s start-stop-daemon -S -c openclaw -x %s -- %s",
+		shell_quote(paths.oc_data),
+		shell_quote(paths.oc_data .. "/.npm"),
+		shell_quote(WECHAT_HELPER),
+		action
+	)
 
 	if extra_args and extra_args ~= "" then
 		command = command .. " " .. extra_args
@@ -286,7 +318,10 @@ function index()
 	entry({"admin", "services", "openclaw", "status_api"}, call("action_status"), nil).leaf = true
 
 	-- 服务控制 API
-	entry({"admin", "services", "openclaw", "service_ctl"}, call("action_service_ctl"), nil).leaf = true
+	-- 会改状态的端点必须用 post(): LuCI 的 test_post_security() 同时要求
+	-- POST 方法与匹配的 CSRF token，call() 允许 GET 触发，
+	-- 诱导已登录管理员访问一个链接即可启停服务。
+	entry({"admin", "services", "openclaw", "service_ctl"}, post("action_service_ctl"), nil).leaf = true
 
 	-- 安装/升级日志 API (轮询)
 	entry({"admin", "services", "openclaw", "setup_log"}, call("action_setup_log"), nil).leaf = true
@@ -294,14 +329,14 @@ function index()
 	-- 版本检查 API (仅检查插件版本)
 	entry({"admin", "services", "openclaw", "check_update"}, call("action_check_update"), nil).leaf = true
 
-	-- 卸载运行环境 API
-	entry({"admin", "services", "openclaw", "uninstall"}, call("action_uninstall"), nil).leaf = true
+	-- 卸载运行环境 API (破坏性操作，必须 POST + CSRF)
+	entry({"admin", "services", "openclaw", "uninstall"}, post("action_uninstall"), nil).leaf = true
 
-	-- 获取网关 Token API (仅认证用户可访问)
-	entry({"admin", "services", "openclaw", "get_token"}, call("action_get_token"), nil).leaf = true
+	-- 获取网关 Token API (返回凭据，必须 POST + CSRF 防止被第三方页面读取)
+	entry({"admin", "services", "openclaw", "get_token"}, post("action_get_token"), nil).leaf = true
 
-	-- 插件升级 API
-	entry({"admin", "services", "openclaw", "plugin_upgrade"}, call("action_plugin_upgrade"), nil).leaf = true
+	-- 插件升级 API (会下载并执行 .run，必须 POST + CSRF)
+	entry({"admin", "services", "openclaw", "plugin_upgrade"}, post("action_plugin_upgrade"), nil).leaf = true
 
 	-- 插件升级日志 API (轮询)
 	entry({"admin", "services", "openclaw", "plugin_upgrade_log"}, call("action_plugin_upgrade_log"), nil).leaf = true
@@ -311,7 +346,9 @@ function index()
 	entry({"admin", "services", "openclaw", "runtime_upgrade_log"}, call("action_runtime_upgrade_log"), nil).leaf = true
 
 	-- 配置备份 API (v2026.3.8+: openclaw backup create/verify)
-	entry({"admin", "services", "openclaw", "backup"}, call("action_backup"), nil).leaf = true
+	-- 含 create/restore/delete 等破坏性动作，必须 POST + CSRF。
+	-- 只读的 list 也走同一入口，一并要求 POST 以保持调用方式统一。
+	entry({"admin", "services", "openclaw", "backup"}, post("action_backup"), nil).leaf = true
 
 	-- 系统配置检测 API (安装前检测)
 	entry({"admin", "services", "openclaw", "check_system"}, call("action_check_system"), nil).leaf = true
@@ -510,10 +547,14 @@ function action_service_ctl()
 		-- stop 后额外等待确保端口释放
 		sys.exec("sleep 2")
 	elseif action == "restart" then
-		-- 先完整 stop (确保端口释放)，再后台 start
-		sys.exec("/etc/init.d/openclaw stop >/dev/null 2>&1")
-		sys.exec("sleep 2")
-		sys.exec("/etc/init.d/openclaw start >/dev/null 2>&1 &")
+		-- 常规“重启”只重启 Gateway，不重启 Web PTY，避免 stop+start 带来的长时间等待。
+		-- 如果 procd 没有 gateway 实例，再回退到 start。
+		local procd_running = sys.exec("ubus call service list '{\"name\":\"openclaw\"}' 2>/dev/null | jsonfilter -e '$.openclaw.instances.gateway.running' 2>/dev/null"):gsub("%s+", "")
+		if procd_running == "true" then
+			sys.exec("/etc/init.d/openclaw restart_gateway >/dev/null 2>&1 &")
+		else
+			sys.exec("/etc/init.d/openclaw start >/dev/null 2>&1 &")
+		end
 	elseif action == "enable" then
 		sys.exec("/etc/init.d/openclaw enable 2>/dev/null")
 	elseif action == "disable" then
@@ -560,11 +601,16 @@ function action_service_ctl()
 			if tested_ver ~= "" then
 				table.insert(env_parts, 1, "OC_VERSION=" .. shell_quote(tested_ver))
 			end
+		elseif version == "latest" then
+			env_prefix = "OC_VERSION='latest' "
 		elseif version ~= "" and version ~= "latest" then
 			-- 校验版本号格式 (仅允许数字、点、横线、字母)
 			if version:match("^[%d%.%-a-zA-Z]+$") then
 				table.insert(env_parts, 1, "OC_VERSION=" .. shell_quote(version))
 			end
+			-- 保存规范化后的基础路径，公开字段仍为 install_path，避免破坏兼容。
+			sys.exec("uci set openclaw.main.install_path=" .. shell_quote(normalized) .. "; uci commit openclaw 2>/dev/null")
+			env_prefix = env_prefix .. "OC_INSTALL_PATH=" .. shell_quote(normalized) .. " "
 		end
 
 		uci:set("openclaw", "main", "install_root", requested_paths.install_root)
@@ -711,6 +757,13 @@ function action_uninstall()
 	local http = require "luci.http"
 	local sys = require "luci.sys"
 	local paths = get_runtime_paths()
+	local install_path = paths.oc_root
+	if not is_safe_openclaw_root(install_path) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "安装路径未通过安全校验，已取消卸载: " .. install_path })
+		return
+	end
+	local q_install_path = shell_quote(install_path)
 
 	-- 停止服务
 	sys.exec("/etc/init.d/openclaw stop >/dev/null 2>&1")
@@ -719,9 +772,7 @@ function action_uninstall()
 	-- 设置 UCI enabled=0
 	sys.exec("uci set openclaw.main.enabled=0; uci commit openclaw 2>/dev/null")
 	-- 删除 Node.js + OpenClaw 运行环境 (包含所有插件: qqbot, 飞书等)
-	sys.exec("rm -rf " .. shell_quote(paths.oc_root))
-	-- 清理旧数据迁移后可能残留的目录
-	sys.exec("rm -rf /root/.openclaw 2>/dev/null")
+	sys.exec("rm -rf " .. q_install_path)
 	-- 清理临时文件
 	sys.exec("rm -f /tmp/openclaw-setup.* /tmp/openclaw-update.log /tmp/openclaw-plugin-upgrade.* /var/run/openclaw*.pid")
 	-- 清理 LuCI 缓存
@@ -1376,8 +1427,19 @@ function action_check_system()
 		result.message = "检测目录不存在: " .. paths.install_root .. "。请先挂载或创建该目录。"
 	end
 
+	-- 安装前写入探针：先在实际存在的父目录创建临时目录。
+	-- 这能明确识别 overlay 满、只读挂载、路径挂载点不可写等问题，避免下载完才失败。
+	local probe_dir = disk_check_path .. "/.openclaw-write-test-" .. tostring(os.time()) .. "-" .. tostring(math.random(1000, 9999))
+	local probe_rc = os.execute("mkdir " .. shell_quote(probe_dir) .. " >/dev/null 2>&1")
+	if probe_rc == 0 or probe_rc == true then
+		result.writable_ok = true
+		os.execute("rmdir " .. shell_quote(probe_dir) .. " >/dev/null 2>&1")
+	else
+		result.writable_ok = false
+	end
+
 	-- 综合判断
-	result.pass = result.memory_ok and result.disk_ok
+	result.pass = result.memory_ok and result.disk_ok and result.writable_ok
 
 	-- 生成提示信息
 	if result.pass then
@@ -1392,6 +1454,9 @@ function action_check_system()
 		end
 		if result.message == "" and not result.disk_ok then
 			table.insert(issues, string.format("磁盘空间不足: 当前 %d MB 可用，需要至少 %d MB", result.disk_mb, MIN_DISK_MB))
+		end
+		if not result.writable_ok then
+			table.insert(issues, "安装路径所在挂载点不可写，可能是 overlay 已满、只读或外置盘未正确挂载")
 		end
 		result.message = table.concat(issues, "；")
 	end
@@ -1472,11 +1537,18 @@ function action_wechat_install()
 		http.write_json({ status = "error", message = "OpenClaw 运行环境未安装，请先在基本设置中安装运行环境" })
 		return
 	end
-
+	if not ensure_openclaw_user(paths.oc_data) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "无法创建 openclaw 系统用户" })
+		return
+	end
 	if not file_exists(WECHAT_HELPER) then
 		http.prepare_content("application/json")
 		http.write_json({ status = "error", message = "微信 helper 未安装" })
 		return
+	end
+	if sys.call("command -v python3 >/dev/null 2>&1") ~= 0 then
+		sys.exec("opkg update >/dev/null 2>&1 && opkg install python3-light >/dev/null 2>&1")
 	end
 
 	sys.exec("rm -f " .. shell_quote(WECHAT_INSTALL_LOG) .. " " .. shell_quote(WECHAT_INSTALL_PID) .. " " .. shell_quote(WECHAT_INSTALL_EXIT) .. " " .. shell_quote(WECHAT_STATE_FILE))
@@ -1563,6 +1635,15 @@ function action_wechat_login()
 		http.write_json({ status = "error", message = "微信 helper 未安装" })
 		return
 	end
+	if file_exists("/usr/libexec/openclaw-permissions.sh") then
+		sys.exec("/usr/libexec/openclaw-permissions.sh prepare-workdirs " .. shell_quote(paths.oc_data) .. " >/dev/null 2>&1")
+	end
+	local writable_check = "test -w " .. shell_quote(paths.oc_data .. "/.npm") .. " && test -w " .. shell_quote(paths.oc_data .. "/.openclaw")
+	if sys.call("start-stop-daemon -S -c openclaw -x /bin/sh -- -c " .. shell_quote(writable_check) .. " >/dev/null 2>&1") ~= 0 then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "openclaw 用户无法写入微信登录目录" })
+		return
+	end
 
 	sys.exec("rm -f " .. shell_quote(WECHAT_LOGIN_QR) .. " " .. shell_quote(WECHAT_LOGIN_PID) .. " " .. shell_quote(WECHAT_LOGIN_EXIT) .. " " .. shell_quote(WECHAT_RESTARTED) .. " " .. shell_quote(WECHAT_STATE_FILE))
 	wechat_spawn("login", WECHAT_LOGIN_PID)
@@ -1604,6 +1685,8 @@ function action_wechat_login_status()
 		or qrcode:find("成功登录") ~= nil
 		or qrcode:find("Login success") ~= nil
 		or qrcode:find("Logged in") ~= nil
+		or qrcode:find("已将此 OpenClaw 连接到微信", 1, true) ~= nil
+		or qrcode:find("Local login saved auth for openclaw%-weixin") ~= nil
 
 	local state = "idle"
 	if helper_finished and exit_code == 0 then
@@ -1622,8 +1705,9 @@ function action_wechat_login_status()
 
 	if state == "success" and not nixio_fs.stat(WECHAT_RESTARTED, "type") then
 		sys.exec("touch " .. shell_quote(WECHAT_RESTARTED))
-		sys.exec("/etc/init.d/openclaw restart >/dev/null 2>&1 &")
+		sys.exec("/etc/init.d/openclaw restart_gateway >/dev/null 2>&1 &")
 	end
+	local error_detail = state == "failed" and qrcode:sub(-2000) or ""
 
 	http.prepare_content("application/json")
 	http.write_json({
@@ -1634,6 +1718,7 @@ function action_wechat_login_status()
 		running = running,
 		exit_code = exit_code,
 		logged_in = logged_in,
+		error_detail = error_detail,
 	})
 end
 
@@ -1642,6 +1727,7 @@ function action_wechat_check_upgrade()
 	local sys = require "luci.sys"
 	local paths = get_runtime_paths()
 	local wechat_paths = get_wechat_paths(paths)
+	local npm_bin = paths.node_base .. "/bin/npm"
 
 	local current_version = ""
 	if file_exists(wechat_paths.package_json) then
@@ -1654,8 +1740,8 @@ function action_wechat_check_upgrade()
 	end
 
 	local latest_version = ""
+	local check_err = ""
 	if runtime_installed(paths) and file_exists(get_node_bin(paths)) then
-		local npx_bin = paths.node_base .. "/bin/npx"
 		local env_prefix = string.format(
 			"HOME=%s PATH=%s:%s:$PATH",
 			shell_quote(paths.oc_data),
@@ -1663,11 +1749,13 @@ function action_wechat_check_upgrade()
 			shell_quote(paths.oc_global .. "/bin")
 		)
 		local check_cmd = string.format(
-			"%s %s view @tencent-weixin/openclaw-weixin version 2>/dev/null",
+			"%s %s view @tencent-weixin/openclaw-weixin version 2>&1",
 			env_prefix,
-			shell_quote(npx_bin)
+			shell_quote(npm_bin)
 		)
-		latest_version = sys.exec(check_cmd):gsub("%s+", "")
+		local raw = sys.exec(check_cmd) or ""
+		latest_version = raw:match("(%d+%.%d+%.%d+[%w%.%-]*)%s*$") or ""
+		check_err = latest_version == "" and raw:gsub("%s+$", ""):sub(1, 200) or ""
 	end
 
 	local has_upgrade = false
@@ -1676,11 +1764,14 @@ function action_wechat_check_upgrade()
 	end
 
 	http.prepare_content("application/json")
+	-- 查询失败时必须显式区分"已是最新"与"查不到"，
+	-- 否则用户永远看到"已是最新版"而不知道检测其实没跑通。
 	http.write_json({
-		status = "ok",
+		status = (latest_version ~= "") and "ok" or "error",
 		current_version = current_version,
 		latest_version = latest_version,
 		has_upgrade = has_upgrade,
+		message = (latest_version ~= "") and "" or ("无法查询最新版本: " .. (check_err or "")),
 	})
 end
 
@@ -1694,7 +1785,11 @@ function action_wechat_upgrade_plugin()
 		http.write_json({ status = "error", message = "OpenClaw 运行环境未安装，请先在基本设置中安装运行环境" })
 		return
 	end
-
+	if not ensure_openclaw_user(paths.oc_data) then
+		http.prepare_content("application/json")
+		http.write_json({ status = "error", message = "无法创建 openclaw 系统用户" })
+		return
+	end
 	if not file_exists(WECHAT_HELPER) then
 		http.prepare_content("application/json")
 		http.write_json({ status = "error", message = "微信 helper 未安装" })
@@ -1710,6 +1805,7 @@ end
 
 function action_wechat_logout()
 	local http = require "luci.http"
+	local sys = require "luci.sys"
 	local paths = get_runtime_paths()
 	local account_id = http.formvalue("account")
 
@@ -1732,6 +1828,7 @@ function action_wechat_logout()
 	end
 
 	wechat_run("logout", "--account " .. shell_quote(account_id))
+	sys.exec("/etc/init.d/openclaw restart &")
 
 	http.prepare_content("application/json")
 	http.write_json({ status = "ok", message = "微信账号已退出" })
@@ -1739,8 +1836,10 @@ end
 
 function action_wechat_uninstall()
 	local http = require "luci.http"
+	local sys = require "luci.sys"
 	local paths = get_runtime_paths()
 	local wechat_paths = get_wechat_paths(paths)
+	local wechat_state_dir = paths.oc_data .. "/.openclaw/openclaw-weixin"
 
 	if not file_exists(WECHAT_HELPER) then
 		http.prepare_content("application/json")
@@ -1749,12 +1848,34 @@ function action_wechat_uninstall()
 	end
 
 	wechat_run("uninstall")
+	local npm_projects = paths.oc_data .. "/.openclaw/npm/projects"
+	if directory_exists(npm_projects) then
+		sys.exec("find " .. shell_quote(npm_projects) .. " -path '*/node_modules/@tencent-weixin/openclaw-weixin' -type d -prune -exec rm -rf {} + 2>/dev/null")
+	end
+	local config_file = get_config_file(paths)
+	if file_exists(config_file) and file_exists(get_node_bin(paths)) then
+		local cleanup_js = [[
+const fs = require('fs');
+const p = process.env.OC_CONFIG;
+let d = JSON.parse(fs.readFileSync(p, 'utf8'));
+function drop(o, k) { if (o && typeof o === 'object') delete o[k]; }
+function dropChannel(o) { drop(o, 'openclaw-weixin'); drop(o, 'weixin'); }
+if (d.plugins && Array.isArray(d.plugins.allow)) d.plugins.allow = d.plugins.allow.filter((x) => x !== 'openclaw-weixin' && x !== 'weixin');
+if (d.plugins) { dropChannel(d.plugins.installs); dropChannel(d.plugins.entries); }
+dropChannel(d.channels); dropChannel(d.channel);
+fs.writeFileSync(p, JSON.stringify(d, null, 2));
+]]
+		sys.exec("OC_CONFIG=" .. shell_quote(config_file) .. " " .. shell_quote(get_node_bin(paths)) .. " -e " .. shell_quote(cleanup_js) .. " 2>/dev/null")
+	end
 
 	if file_exists(wechat_paths.plugin_dir) then
 		http.prepare_content("application/json")
 		http.write_json({ status = "error", message = "微信插件卸载失败" })
 		return
 	end
+
+	sys.exec("/etc/init.d/openclaw restart &")
+	sys.exec("(sleep 6; rm -rf " .. shell_quote(wechat_state_dir) .. " 2>/dev/null) &")
 
 	http.prepare_content("application/json")
 	http.write_json({ status = "ok", message = "微信插件已卸载" })

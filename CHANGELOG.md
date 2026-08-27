@@ -4,6 +4,14 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [2.1.1] - 2026-08-27
+
+### 修复
+
+- 同步上游 OpenClaw 2.1.1 的配置、LuCI CSRF、PTY、微信生命周期和启动安全修复。
+- 默认 ARM64 musl Node.js 运行时固定为 22.23.2，满足 OpenClaw 2026.7.1 的引擎要求。
+- 保留 hotwa 的 Gitea fallback、三格式发布、可迁移安装根目录和运行时维护流程。
+
 ## [2026.6.10] - 2026-06-30
 
 ### 维护

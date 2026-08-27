@@ -34,26 +34,32 @@ export TEMP="${OC_DATA}/tmp"
 # 这些变量确保 openclaw 命令使用正确的配置路径
 export OPENCLAW_HOME="$OC_DATA"
 export OPENCLAW_STATE_DIR="${OC_DATA}/.openclaw"
-export OPENCLAW_CONFIG_PATH="${OC_DATA}/.openclaw/openclaw.json"
+export OPENCLAW_CONFIG_PATH="$CONFIG_FILE"
 
-# 设置 HOME 为 OpenClaw 数据目录
-# 这是解决 Issue #42 的关键：确保 OpenClaw CLI 使用正确的配置路径
-# 注意：这会影响 cd ~ 等行为，但为了配置一致性是必要的
-export HOME="$OC_DATA"
-
-# 创建便捷别名：用户可直接运行 openclaw 命令
-if [ -x "${OC_GLOBAL}/bin/openclaw" ] || [ -x "${NODE_BASE}/bin/openclaw" ]; then
-  # openclaw 已在 PATH 中，无需别名
-  :
+# 创建便捷包装器：只给 openclaw 命令单独注入 HOME，避免污染用户 shell。
+_oc_cli=""
+if [ -x "${OC_GLOBAL}/bin/openclaw" ]; then
+	_oc_cli="${OC_GLOBAL}/bin/openclaw"
+elif [ -x "${NODE_BASE}/bin/openclaw" ]; then
+	_oc_cli="${NODE_BASE}/bin/openclaw"
 else
-  # 尝试查找 openclaw 入口并创建别名
-  for _oc_dir in "${OC_GLOBAL}/lib/node_modules/openclaw" "${OC_GLOBAL}/node_modules/openclaw" "${NODE_BASE}/lib/node_modules/openclaw"; do
-    if [ -f "${_oc_dir}/openclaw.mjs" ]; then
-      alias openclaw="${NODE_BASE}/bin/node ${_oc_dir}/openclaw.mjs"
-      break
-    elif [ -f "${_oc_dir}/dist/cli.js" ]; then
-      alias openclaw="${NODE_BASE}/bin/node ${_oc_dir}/dist/cli.js"
-      break
-    fi
-  done
+	for _oc_dir in "${OC_GLOBAL}/lib/node_modules/openclaw" "${OC_GLOBAL}/node_modules/openclaw" "${NODE_BASE}/lib/node_modules/openclaw"; do
+		if [ -f "${_oc_dir}/openclaw.mjs" ]; then
+			_oc_cli="${NODE_BASE}/bin/node ${_oc_dir}/openclaw.mjs"
+			break
+		elif [ -f "${_oc_dir}/dist/cli.js" ]; then
+			_oc_cli="${NODE_BASE}/bin/node ${_oc_dir}/dist/cli.js"
+			break
+		fi
+	done
+fi
+
+if [ -n "$_oc_cli" ]; then
+	openclaw() {
+		HOME="$OC_DATA" \
+		OPENCLAW_HOME="$OC_DATA" \
+		OPENCLAW_STATE_DIR="${OC_DATA}/.openclaw" \
+		OPENCLAW_CONFIG_PATH="$CONFIG_FILE" \
+		sh -c 'exec "$@"' openclaw $_oc_cli "$@"
+	}
 fi
