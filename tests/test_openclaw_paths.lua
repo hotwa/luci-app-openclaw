@@ -1,5 +1,5 @@
 local script_dir = arg[0]:match("^(.*)/[^/]+$")
-local repo_root = script_dir:gsub("/tests$", "")
+local repo_root = script_dir == "tests" and "." or script_dir:gsub("/tests$", "")
 
 package.path = table.concat({
 	repo_root .. "/luasrc/?.lua",

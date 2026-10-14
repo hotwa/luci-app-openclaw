@@ -26,6 +26,14 @@ if grep -Fq "secrets.GITEA_TOKEN != ''" "$WORKFLOW"; then
 	fail "workflow should not reference secrets directly inside if conditionals"
 fi
 
+# Source contracts pin the checkout's tested versions; release injection changes them.
+python3 - "$WORKFLOW" <<'PYTEST'
+from pathlib import Path
+import sys
+workflow = Path(sys.argv[1]).read_text()
+assert workflow.index('      - name: Run contract tests') < workflow.index('      - name: Inject version'), 'source contracts must run before release version injection'
+PYTEST
+
 [ -f "$GITEA_SYNC_SCRIPT" ] || fail "optional Gitea sync helper script should exist"
 grep -Fq "/mirror-sync" "$GITEA_SYNC_SCRIPT" || fail "Gitea sync script should trigger mirror refresh before publishing"
 grep -Fq "/tags/" "$GITEA_SYNC_SCRIPT" || fail "Gitea sync script should wait for mirrored tags before creating releases"

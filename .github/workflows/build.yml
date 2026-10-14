@@ -41,6 +41,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Run contract tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lua5.1
+          # 先验证 checkout 的固定版本契约，再注入本次发布版本。
+          # 用 runner 统一执行 tests/ 下全部测试。
+          # 原先逐个列出测试文件，新增测试很容易漏进 CI ——
+          # 护栏建好了却不阻断发布，等于没建。
+          sh tests/run_all.sh
+
       - name: Determine version
         id: version
         run: |
@@ -86,15 +96,6 @@ jobs:
           echo "oc_version=${OC_VER}" >> "$GITHUB_OUTPUT"
           echo "Node.js: v${NODE_VER}"
           echo "OpenClaw: v${OC_VER}"
-
-      - name: Run contract tests
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq lua5.1
-          # 用 runner 统一执行 tests/ 下全部测试。
-          # 原先逐个列出测试文件，新增测试很容易漏进 CI ——
-          # 护栏建好了却不阻断发布，等于没建。
-          sh tests/run_all.sh
 
       - name: Build .run installer (online)
         run: |
